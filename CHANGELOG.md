@@ -3,12 +3,6 @@
 Versions are those in the `VERSION` file (`./harden.sh --version`). The audit script carries
 its own version, recorded in every result file.
 
-## Unreleased
-
-- Documentation: `hardening_audit_lynis` is listed with the other settings and in the example
-  overrides file.
-- README screenshots show the current report, including the CIS column.
-
 ## 1.0.2 - 2026-10-05
 
 - `--no-lynis` (or `hardening_audit_lynis: false`) audits with the CIS-mapped checks only:
@@ -17,6 +11,9 @@ its own version, recorded in every result file.
 - The report shows the CIS Benchmark section of every check in a **CIS** column (open
   findings, accepted risks, manual review and the control-family tables), not only per family.
 - Issue and pull request templates, a code of conduct and README badges.
+- Documentation: `hardening_audit_lynis` is listed with the other settings and in the example
+  overrides file.
+- README screenshots show the current report, including the CIS column.
 
 ## 1.0.1 - 2026-10-05
 
