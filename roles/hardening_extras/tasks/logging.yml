@@ -1,0 +1,96 @@
+---
+- name: Create journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Persist and compress the journal
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/50-hardening.conf
+    content: |
+      # Managed by Ansible (hardening_extras)
+      [Journal]
+      Storage=persistent
+      Compress=yes
+      SystemMaxUse={{ hardening_journald_max_use }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Install the rsyslog TLS driver
+  ansible.builtin.apt:
+    name: rsyslog-gnutls
+    state: present
+  when:
+    - hardening_syslog_remote_host | length > 0
+    - hardening_syslog_remote_tls | bool
+
+- name: Forward logs to the central log host
+  ansible.builtin.copy:
+    dest: /etc/rsyslog.d/60-hardening-remote.conf
+    content: |
+      # Managed by Ansible (hardening_extras). Disk-assisted queue: no log loss while the
+      # collector is unreachable, no blocking of local logging.
+      {% if hardening_syslog_remote_tls | bool %}
+      # TLS: the collector must present a certificate issued by the CA below and matching
+      # the permitted peer name; otherwise nothing is sent.
+      global(DefaultNetstreamDriverCAFile="{{ hardening_syslog_remote_ca_file }}")
+      {% endif %}
+      *.* action(type="omfwd" target="{{ hardening_syslog_remote_host }}" port="{{ hardening_syslog_remote_port }}"
+                 protocol="{{ hardening_syslog_remote_protocol }}"
+      {% if hardening_syslog_remote_tls | bool %}
+                 StreamDriver="gtls" StreamDriverMode="1" StreamDriverAuthMode="x509/name"
+                 StreamDriverPermittedPeers="{{ hardening_syslog_remote_peer_name }}"
+      {% endif %}
+                 action.resumeRetryCount="-1" queue.type="LinkedList" queue.filename="fwd_hardening"
+                 queue.maxDiskSpace="256m" queue.saveOnShutdown="on")
+    owner: root
+    group: root
+    mode: "0640"
+  when: hardening_syslog_remote_host | length > 0
+  register: hardening_syslog_fwd
+  notify: Restart rsyslog
+
+# rsyslogd is confined by AppArmor and cannot read a temporary file, so the fragment cannot
+# be validated on its own. Validate the whole configuration with it in place and take it
+# out again if rsyslog would not start with it.
+- name: Validate the rsyslog configuration with forwarding in place
+  ansible.builtin.command: rsyslogd -N1
+  register: hardening_rsyslog_check
+  changed_when: false
+  failed_when: false
+  when: hardening_syslog_fwd is changed
+
+- name: Withdraw a forwarding configuration rsyslog rejects
+  when:
+    - hardening_syslog_fwd is changed
+    - hardening_rsyslog_check.rc != 0
+  block:
+    - name: Remove the rejected file
+      ansible.builtin.file:
+        path: /etc/rsyslog.d/60-hardening-remote.conf
+        state: absent
+
+    - name: Report why
+      ansible.builtin.fail:
+        msg: "rsyslog rejected the forwarding configuration and it was removed again: {{ hardening_rsyslog_check.stderr | default('') }}"
+
+- name: Remove log forwarding when no collector is configured
+  ansible.builtin.file:
+    path: /etc/rsyslog.d/60-hardening-remote.conf
+    state: absent
+  when: hardening_syslog_remote_host | length == 0
+  notify: Restart rsyslog
+
+- name: Tighten permissions on existing log files
+  ansible.builtin.shell: |
+    find /var/log -xdev -type f -perm /0137 \
+      ! -name 'wtmp*' ! -name 'btmp*' ! -name 'lastlog*' ! -path '/var/log/journal/*' \
+      -print -exec chmod u-x,g-wx,o-rwx {} +
+  register: hardening_log_perms
+  changed_when: hardening_log_perms.stdout | length > 0
+  when: hardening_fix_log_permissions | bool

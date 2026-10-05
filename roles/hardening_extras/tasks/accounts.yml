@@ -1,0 +1,35 @@
+---
+# login.defs is edited line by line rather than replaced by dev-sec's template
+# (os_login_defs_enabled: false): that template sets ENCRYPT_METHOD SHA512, which would be a
+# downgrade from Ubuntu's yescrypt default.
+- name: Password ageing and umask defaults for new accounts
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: '^\s*{{ item.key }}\s'
+    line: "{{ item.key }}\t{{ item.value }}"
+  loop:
+    - { key: PASS_MAX_DAYS, value: "{{ hardening_pass_max_days }}" }
+    - { key: PASS_MIN_DAYS, value: "{{ hardening_pass_min_days }}" }
+    - { key: PASS_WARN_AGE, value: "{{ hardening_pass_warn_age }}" }
+    - { key: UMASK, value: "{{ hardening_umask }}" }
+
+- name: Read current useradd defaults
+  ansible.builtin.command: useradd -D
+  register: hardening_useradd_defaults
+  changed_when: false
+  check_mode: false
+
+- name: Lock new accounts some days after password expiry - {{ hardening_inactive_days }}
+  ansible.builtin.command: useradd -D -f {{ hardening_inactive_days }}
+  when: ('INACTIVE=' ~ hardening_inactive_days) not in hardening_useradd_defaults.stdout_lines
+  changed_when: true
+
+- name: Default umask for interactive shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/50-hardening-umask.sh
+    content: |
+      # Managed by Ansible (hardening_extras)
+      umask {{ hardening_umask }}
+    owner: root
+    group: root
+    mode: "0644"

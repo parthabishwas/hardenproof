@@ -1,0 +1,80 @@
+## Managed by Ansible (hardening_extras). Rule families follow CIS Ubuntu LTS section 6.2.
+{% set present = hardening_audit_watch_stat.results | selectattr('stat.exists') | map(attribute='item') | list %}
+{% macro watch(path, key) %}
+{% if path in present %}
+-w {{ path }} -p wa -k {{ key }}
+{% endif %}
+{% endmacro %}
+-D
+-b {{ hardening_audit_backlog_limit }}
+-f 1
+
+## Changes to privilege scope
+{{ watch('/etc/sudoers', 'scope') -}}
+{{ watch('/etc/sudoers.d', 'scope') -}}
+
+## Commands run as another user (sudo, su, setuid)
+-a always,exit -F arch=b64 -C euid!=uid -F auid!=unset -S execve -k user_emulation
+-a always,exit -F arch=b32 -C euid!=uid -F auid!=unset -S execve -k user_emulation
+{% if not hardening_sudo_rs %}
+{{ watch(hardening_sudo_logfile, 'sudo_log_file') -}}
+{% endif %}
+
+## Date and time
+-a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+-a always,exit -F arch=b32 -S adjtimex,settimeofday -k time-change
+-a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
+-a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
+{{ watch('/etc/localtime', 'time-change') -}}
+
+## Network environment
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
+-a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
+{% for p in ['/etc/issue', '/etc/issue.net', '/etc/hosts', '/etc/hostname', '/etc/networks', '/etc/network', '/etc/netplan'] %}
+{{ watch(p, 'system-locale') -}}
+{% endfor %}
+
+## Unsuccessful file access
+-a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
+-a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+-a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
+-a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+
+## Identity and authentication configuration
+{% for p in ['/etc/group', '/etc/passwd', '/etc/gshadow', '/etc/shadow', '/etc/security/opasswd', '/etc/nsswitch.conf', '/etc/pam.conf', '/etc/pam.d'] %}
+{{ watch(p, 'identity') -}}
+{% endfor %}
+{{ watch('/etc/ssh/sshd_config', 'sshd_config') -}}
+{{ watch('/etc/audit', 'audit_config') -}}
+
+## Discretionary access control changes
+-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b32 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
+
+## Mounts
+-a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=unset -k mounts
+-a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=unset -k mounts
+
+## Sessions and logins
+{% for p in ['/run/utmp', '/var/log/wtmp', '/var/log/btmp'] %}
+{{ watch(p, 'session') -}}
+{% endfor %}
+{% for p in ['/var/log/lastlog', '/var/lib/lastlog', '/run/faillock'] %}
+{{ watch(p, 'logins') -}}
+{% endfor %}
+
+## File deletion by users
+-a always,exit -F arch=b64 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
+-a always,exit -F arch=b32 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
+
+## Mandatory access control policy
+{{ watch('/etc/apparmor', 'MAC-policy') -}}
+{{ watch('/etc/apparmor.d', 'MAC-policy') -}}
+
+## Kernel modules
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -F auid>=1000 -F auid!=unset -k kernel_modules
+-a always,exit -F path=/usr/bin/kmod -F perm=x -F auid>=1000 -F auid!=unset -k kernel_modules

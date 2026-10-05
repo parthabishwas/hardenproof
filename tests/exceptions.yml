@@ -1,0 +1,5 @@
+---
+exceptions:
+  - {id: BOOT-01, reason: "VM; console access restricted", accepted_by: "CI", expires: 2999-01-01}
+  - {id: LOG-06, reason: "expired on purpose", accepted_by: "CI", expires: 2000-01-01}
+  - {id: SSH-23, reason: "stale: this check passes", accepted_by: "CI", expires: 2999-01-01}

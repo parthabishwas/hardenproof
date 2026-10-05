@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          ansible-galaxy collection install -r requirements.yml -p ./collections
+
+      - name: Shell scripts
+        run: shellcheck -S warning harden.sh audit/cis_audit.sh roles/hardening_extras/files/rollback.sh tests/test_report.sh
+
+      - name: YAML
+        run: yamllint .
+
+      - name: Playbook syntax
+        run: |
+          for pb in playbooks/audit.yml playbooks/harden.yml playbooks/revert.yml playbooks/bootstrap-access.yml; do
+            HARDEN_BECOME_PASS= ansible-playbook -i inventory/example/hosts.yml --syntax-check "$pb"
+          done
+
+      - name: Ansible lint
+        run: ansible-lint playbooks roles
+
+      - name: Report generator
+        run: tests/test_report.sh

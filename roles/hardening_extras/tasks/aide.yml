@@ -1,0 +1,143 @@
+---
+# Run LAST: the database must describe the hardened system, otherwise the first nightly
+# check reports every file the hardening run touched.
+- name: Note whether a mail transfer agent is already installed
+  ansible.builtin.shell: |
+    set -o pipefail
+    if [ -e /var/backups/hardening/.mta-installed-by-hardening ]; then echo ours
+    elif dpkg-query -W -f='${db:Status-Status}' postfix 2>/dev/null | grep -qx installed; then echo present
+    else echo absent; fi
+  args:
+    executable: /bin/bash
+  register: hardening_mta_before
+  changed_when: false
+  check_mode: false
+
+- name: Install AIDE
+  ansible.builtin.apt:
+    name:
+      - aide
+      - aide-common
+    state: present
+    # aide-common Recommends a mailx, which drags in postfix listening on 0.0.0.0:25.
+    # Installing an integrity checker must not add a network service.
+    install_recommends: false
+
+# On Ubuntu 22.04 aide-common DEPENDS on a mailer, so postfix arrives no matter what and
+# listens on every interface. Installing an integrity checker must not add a network
+# service: a postfix that was not there before is restricted to loopback.
+- name: Check whether postfix is installed now
+  ansible.builtin.stat:
+    path: /usr/sbin/postconf
+  register: hardening_postconf
+
+- name: Remember that this playbook brought in the mail transfer agent
+  ansible.builtin.file:
+    path: /var/backups/hardening/.mta-installed-by-hardening
+    state: touch
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when:
+    - hardening_postconf.stat.exists
+    - hardening_mta_before.stdout in ['absent', 'ours']
+
+- name: Read the interfaces postfix listens on
+  ansible.builtin.command: postconf -h inet_interfaces
+  register: hardening_postfix_ifaces
+  changed_when: false
+  check_mode: false
+  when: hardening_postconf.stat.exists
+
+- name: Restrict postfix to the loopback interface
+  ansible.builtin.shell: |
+    postconf -e 'inet_interfaces = loopback-only'
+    systemctl restart postfix
+  changed_when: true
+  when:
+    - hardening_postconf.stat.exists
+    - hardening_postfix_ifaces.stdout | trim != 'loopback-only'
+    - hardening_mta_before.stdout in ['absent', 'ours'] or hardening_mta_loopback_only | bool
+
+- name: Exclude volatile and foreign trees from integrity checking
+  ansible.builtin.copy:
+    dest: /etc/aide/aide.conf.d/99_hardening_excludes
+    content: |
+      # Managed by Ansible (hardening_extras)
+      {% for p in hardening_aide_excludes %}
+      !{{ p }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+
+# Rebuilding takes minutes, so do it only when the system actually changed during this run
+# (hardening_aide_reinit: auto). .run-start is touched by the preflight backup.
+- name: Decide whether the integrity baseline must be rebuilt
+  ansible.builtin.shell: |
+    set -o pipefail
+    [ -s /var/lib/aide/aide.db ] || { echo "no database yet"; exit 0; }
+    [ -e /var/backups/hardening/.run-start ] || { echo "no run marker"; exit 0; }
+    find /etc /usr /boot /opt -xdev -type f -newer /var/backups/hardening/.run-start -print -quit 2>/dev/null \
+      | sed 's/^/changed since run start: /'
+  args:
+    executable: /bin/bash
+  register: hardening_aide_need
+  changed_when: false
+  check_mode: false
+
+- name: Build the AIDE baseline database (can take several minutes)
+  ansible.builtin.command: aideinit -y -f
+  async: 3600
+  poll: 20
+  changed_when: true
+  when: >-
+    hardening_aide_reinit == 'always' or
+    (hardening_aide_reinit == 'auto' and hardening_aide_need.stdout | length > 0)
+
+- name: Integrity baseline left as it is
+  ansible.builtin.debug:
+    msg: "No file under /etc, /usr, /boot or /opt changed during this run; AIDE database not rebuilt."
+  when:
+    - hardening_aide_reinit != 'always'
+    - hardening_aide_need.stdout | length == 0
+
+# Newer aide-common schedules the check with a systemd timer; Ubuntu 22.04 ships
+# /etc/cron.daily/aide instead, which needs no enabling.
+- name: Find out how this release schedules the integrity check
+  ansible.builtin.shell: |
+    set -o pipefail
+    if systemctl list-unit-files dailyaidecheck.timer 2>/dev/null | grep -q dailyaidecheck.timer; then echo timer
+    elif [ -x /etc/cron.daily/aide ]; then echo cron
+    else echo none; fi
+  args:
+    executable: /bin/bash
+  register: hardening_aide_schedule
+  changed_when: false
+  check_mode: false
+
+- name: Enable the daily integrity check
+  ansible.builtin.systemd:
+    name: dailyaidecheck.timer
+    enabled: true
+    state: started
+  when:
+    - not ansible_check_mode
+    - hardening_aide_schedule.stdout == 'timer'
+
+- name: The integrity check has no schedule on this host
+  ansible.builtin.fail:
+    msg: "aide-common provides neither dailyaidecheck.timer nor /etc/cron.daily/aide here; schedule 'aide --check' yourself."
+  when:
+    - not ansible_check_mode
+    - hardening_aide_schedule.stdout == 'none'
+
+# Files created during this run (apt history, aide logs) get the same treatment as the rest.
+- name: Tighten permissions on log files created during the run
+  ansible.builtin.shell: |
+    find /var/log -xdev -type f -perm /0137 \
+      ! -name 'wtmp*' ! -name 'btmp*' ! -name 'lastlog*' ! -path '/var/log/journal/*' \
+      -print -exec chmod u-x,g-wx,o-rwx {} +
+  register: hardening_log_perms_post
+  changed_when: hardening_log_perms_post.stdout | length > 0
+  when: hardening_fix_log_permissions | bool

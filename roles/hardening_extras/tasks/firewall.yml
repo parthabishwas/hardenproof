@@ -1,0 +1,118 @@
+---
+# ufw is a front end to the same netfilter tables Docker uses (iptables-nft), so the two
+# coexist. Limits to know about:
+#   * ports PUBLISHED by Docker (-p) are DNATed in PREROUTING and traverse FORWARD, not
+#     INPUT - ufw rules do not apply to them. Bind them to 127.0.0.1 or filter in DOCKER-USER.
+#   * the first "enable" on a remote host is the lockout moment; the playbook's rollback
+#     guard is armed around it and the SSH rule is added before the policy flips.
+- name: Install ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+- name: Inbound allow list
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto | default('tcp') }}"
+    from_ip: "{{ item.from | default('any') }}"
+    comment: "{{ item.comment | default(omit) }}"
+  loop: "{{ hardening_fw_allow }}"
+
+- name: Default policies
+  community.general.ufw:  # noqa: args[module] - the policy value comes from the loop below
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: incoming, policy: deny }
+    - { direction: outgoing, policy: allow }
+    - { direction: routed, policy: deny }
+
+- name: Firewall logging
+  community.general.ufw:
+    logging: "{{ hardening_fw_logging }}"
+
+- name: Enable the firewall
+  community.general.ufw:
+    state: enabled
+
+# ---- Docker-published ports ---------------------------------------------------------------
+# Docker evaluates the DOCKER-USER chain before its own forwarding rules and leaves its
+# contents alone. A small unit re-applies our rules whenever Docker (re)starts.
+- name: Docker published-port filter
+  when:
+    - hardening_docker_filter | bool
+    - hardening_docker_present | default(false)
+  block:
+    - name: Install the DOCKER-USER rule script
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/hardening-docker-user
+        content: |
+          #!/bin/sh
+          # Managed by Ansible (hardening_extras). Only the listed published ports are
+          # reachable from outside the host; containers keep talking to each other and out.
+          for ipt in iptables ip6tables; do
+            command -v $ipt >/dev/null 2>&1 || continue
+            $ipt -nL DOCKER-USER >/dev/null 2>&1 || continue
+            $ipt -F DOCKER-USER
+            $ipt -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+            $ipt -A DOCKER-USER -i docker0 -j RETURN
+            $ipt -A DOCKER-USER -i br-+ -j RETURN
+            $ipt -A DOCKER-USER -i lo -j RETURN
+          {% for r in hardening_docker_published_allow %}
+          {% set src = r.from | default('any') %}
+          {% set v6 = ':' in src %}
+            {% if src == 'any' %}$ipt{% elif v6 %}[ $ipt = ip6tables ] && $ipt{% else %}[ $ipt = iptables ] && $ipt{% endif %} -A DOCKER-USER -p {{ r.proto | default('tcp') }}{% if src != 'any' %} -s {{ src }}{% endif %} -m conntrack --ctorigdstport {{ r.port }} --ctdir ORIGINAL -j RETURN
+          {% endfor %}
+            $ipt -A DOCKER-USER -j DROP
+          done
+        owner: root
+        group: root
+        mode: "0750"
+      register: hardening_docker_user_script
+
+    - name: Install the unit that applies it with Docker
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/hardening-docker-user.service
+        content: |
+          # Managed by Ansible (hardening_extras)
+          [Unit]
+          Description=Restrict Docker published ports (DOCKER-USER chain)
+          After=docker.service
+          PartOf=docker.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/sbin/hardening-docker-user
+
+          [Install]
+          WantedBy=docker.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: hardening_docker_user_unit
+
+    - name: Apply the Docker published-port filter
+      ansible.builtin.systemd:
+        name: hardening-docker-user.service
+        enabled: true
+        state: "{{ 'restarted' if (hardening_docker_user_script is changed or hardening_docker_user_unit is changed) else 'started' }}"
+        daemon_reload: true
+
+- name: Remove the Docker published-port filter when it is switched off
+  when: not hardening_docker_filter | bool
+  block:
+    - name: Check for an installed filter
+      ansible.builtin.stat:
+        path: /etc/systemd/system/hardening-docker-user.service
+      register: hardening_docker_user_installed
+
+    - name: Remove it and flush the chain
+      ansible.builtin.shell: |
+        systemctl disable --now hardening-docker-user.service
+        rm -f /etc/systemd/system/hardening-docker-user.service /usr/local/sbin/hardening-docker-user
+        systemctl daemon-reload
+        for ipt in iptables ip6tables; do $ipt -F DOCKER-USER 2>/dev/null || true; done
+      changed_when: true
+      when: hardening_docker_user_installed.stat.exists

@@ -1,0 +1,8 @@
+---
+# Pinned so that a hardening run is reproducible and reviewable.
+# Upgrade deliberately: read the dev-sec changelog, re-run in the lab, re-audit.
+collections:
+  - name: devsec.hardening
+    version: 10.6.0
+  - name: ansible.posix
+  - name: community.general

@@ -1,0 +1,109 @@
+---
+# auditd itself (package, auditd.conf, journald-audit socket) is installed by dev-sec.
+# dev-sec ships no rules, and an audit daemon without rules records almost nothing.
+- name: Install audit plugins
+  ansible.builtin.apt:
+    name: audispd-plugins
+    state: present
+
+- name: Find watch targets that exist on this host
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ hardening_audit_watch_candidates }}"
+  register: hardening_audit_watch_stat
+  vars:
+    hardening_audit_watch_candidates:
+      - /etc/sudoers
+      - /etc/sudoers.d
+      - /etc/localtime
+      - /etc/issue
+      - /etc/issue.net
+      - /etc/hosts
+      - /etc/hostname
+      - /etc/networks
+      - /etc/network
+      - /etc/netplan
+      - /etc/group
+      - /etc/passwd
+      - /etc/gshadow
+      - /etc/shadow
+      - /etc/security/opasswd
+      - /etc/nsswitch.conf
+      - /etc/pam.conf
+      - /etc/pam.d
+      - /run/utmp
+      - /var/log/wtmp
+      - /var/log/btmp
+      - /var/log/lastlog
+      - /var/lib/lastlog
+      - /run/faillock
+      - /etc/apparmor
+      - /etc/apparmor.d
+      - /etc/ssh/sshd_config
+      - /etc/audit
+      - "{{ hardening_sudo_logfile }}"
+
+# Every setuid/setgid binary is a privilege boundary; log each execution by a real user.
+- name: Enumerate setuid/setgid binaries on local filesystems
+  ansible.builtin.shell: |
+    set -o pipefail
+    for m in $(findmnt -rn -o TARGET -t ext2,ext3,ext4,xfs,btrfs,zfs,f2fs); do
+      find "$m" -xdev \( -path /var/lib/docker -o -path /var/lib/containerd -o -path /snap \) -prune \
+        -o -type f \( -perm -4000 -o -perm -2000 \) -print
+    done | sort -u
+  args:
+    executable: /bin/bash
+  register: hardening_priv_binaries
+  changed_when: false
+  check_mode: false
+
+- name: Install audit rules
+  ansible.builtin.template:
+    src: audit/{{ item }}.j2
+    dest: /etc/audit/rules.d/{{ item }}
+    owner: root
+    group: root
+    mode: "0640"
+  loop:
+    - 50-hardening.rules
+    - 60-hardening-privileged.rules
+  notify: Load audit rules
+
+- name: Make the audit configuration immutable until reboot
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/99-finalize.rules
+    content: |
+      # Managed by Ansible (hardening_extras). Must stay the last file in rules.d.
+      -e 2
+    owner: root
+    group: root
+    mode: "0640"
+  when: hardening_audit_immutable | bool
+  notify: Load audit rules
+
+- name: Remove the immutable flag when not wanted
+  ansible.builtin.file:
+    path: /etc/audit/rules.d/99-finalize.rules
+    state: absent
+  when: not hardening_audit_immutable | bool
+  notify: Load audit rules
+
+# Without audit=1 the processes started before auditd (init, early services) are never
+# auditable; the backlog limit stops events being dropped during the boot burst.
+- name: Enable auditing from early boot
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/50-hardening-audit.cfg
+    content: |
+      # Managed by Ansible (hardening_extras)
+      GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX audit=1 audit_backlog_limit={{ hardening_audit_backlog_limit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update grub
+
+- name: Enable auditd
+  ansible.builtin.systemd:
+    name: auditd
+    enabled: true
+    state: started
+  when: not ansible_check_mode   # the unit does not exist yet in a dry run on a fresh host

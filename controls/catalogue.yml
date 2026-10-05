@@ -1,0 +1,401 @@
+---
+# Control catalogue: one entry per control family (the GROUP column of audit/cis_audit.sh).
+# For each family: what we change, why, what it buys, what it can break, how to prove it
+# worked, and how to undo it. tools/report.py joins this with the audit results.
+#
+# Entries describe what the playbooks do on ANY host. Host-specific facts belong in the audit
+# evidence, not here: this text is printed in every host's report.
+#
+# Mappings are at family level. CIS = section of the CIS Ubuntu Linux 24.04 LTS Benchmark
+# v1.0.0 (nearest published benchmark; none exists yet for 26.04). ISO = ISO/IEC 27001:2022
+# Annex A. PCI = PCI DSS v4.0.1. Verify exact recommendation numbers against the licensed
+# documents before using them in an attestation.
+
+FS-MOD:
+  title: Unused filesystem kernel modules
+  cis: "1.1.1"
+  iso: [A.8.9, A.7.10]
+  pci: ["2.2.4"]
+  change: >-
+    /etc/modprobe.d/60-hardening.conf sets "install <module> /bin/false" and "blacklist" for
+    cramfs, freevxfs, hfs, hfsplus, jffs2, udf and usb-storage. Modules backing a mounted
+    filesystem are skipped automatically.
+  why: >-
+    Rarely used filesystem drivers are a recurring source of kernel memory-corruption bugs
+    that are reachable by mounting a crafted image. usb-storage is the data-exfiltration and
+    malware-ingress path on physical hosts.
+  impact: >-
+    None on a server that does not mount these. usb-storage: USB install/rescue media and BMC
+    virtual media stop working until the entry is removed. overlayfs is NOT disabled when
+    Docker is present; squashfs is built into the Ubuntu kernel and is needed by snap.
+  validate: "modprobe -n -v cramfs  -> 'install /bin/false';  lsmod | grep -E 'cramfs|udf|usb_storage'  -> empty"
+  rollback: "Remove the line from hardening_disabled_kernel_modules, re-run --tags modules (or delete the file); modprobe <module>."
+  source: "hardening_extras: kernel_modules.yml; dev-sec os_unused_filesystems"
+
+FS-PART:
+  title: Filesystem layout and mount options
+  cis: "1.1.2"
+  iso: [A.8.9]
+  pci: ["2.2.6"]
+  change: >-
+    /tmp (where it is a tmpfs mount) and /dev/shm gain noexec in addition to nodev,nosuid.
+    Where /tmp lives on the root filesystem (Ubuntu 22.04 / 24.04) nothing changes unless
+    hardening_tmp_tmpfs is set, which moves /tmp to a tmpfs at the next boot. apt is pointed at /var/cache/apt/extracttemplates because dpkg-preconfigure
+    executes package scripts from its temp directory. Separate /home, /var, /var/tmp, /var/log
+    and /var/log/audit filesystems are NOT created.
+  why: >-
+    World-writable directories are where an attacker with code execution drops and runs a
+    second-stage binary; noexec removes the cheapest option. Separate filesystems stop a log or
+    upload flood from filling / and allow per-mount options and quotas.
+  impact: >-
+    Software that executes from /tmp breaks: some vendor installers, JVM/JNA native-library
+    extraction (set java.io.tmpdir / jna.tmpdir), and tools that build in /tmp. noexec is a
+    speed bump, not a boundary - interpreters (bash file, python file) still run. Partitioning
+    cannot be retrofitted online; it belongs in the image/installer (LVM layout).
+  validate: "findmnt -no OPTIONS /tmp /dev/shm; cp /bin/true /tmp/t && /tmp/t  -> 'Permission denied'; apt-get install --reinstall tzdata  -> succeeds"
+  rollback: "rm /etc/systemd/system/tmp.mount.d/50-hardening.conf; systemctl daemon-reload; mount -o remount,exec /tmp"
+  source: "hardening_extras: mounts.yml, packages.yml; dev-sec os_mnt_dev_shm_*"
+
+PKG:
+  title: Patching and package sources
+  cis: "1.2"
+  iso: [A.8.8, A.8.19]
+  pci: ["6.3.3"]
+  change: "With hardening_apply_updates: true, pending updates are installed (apt-get upgrade, never removes a package). It is off by default because updates restart services; pending updates then stay visible as an open finding. unattended-upgrades is left as configured."
+  why: "Unpatched packages are the dominant real-world compromise path; every other control here assumes the kernel and libc are current."
+  impact: "Service restarts during upgrade (docker restarts containers unless live-restore is set). Kernel/libc updates need a reboot to take effect. Third-party repositories (docker, nodesource) are upgraded too."
+  validate: "apt list --upgradable  -> empty; ls /var/run/reboot-required  -> absent after reboot; unattended-upgrade --dry-run -d"
+  rollback: "Package downgrade from /var/cache/apt/archives or VM snapshot; dpkg.before in the backup directory lists the previous versions."
+  source: "hardening_extras: packages.yml"
+
+MAC:
+  title: Mandatory access control (AppArmor)
+  cis: "1.3.1"
+  iso: [A.8.3, A.8.9]
+  pci: ["2.2.6", "7.2"]
+  change: "apparmor-utils installed. Profiles are left in the mode the distribution ships them in."
+  why: "AppArmor confines a compromised daemon to its profile; it is what limits a container or sshd bug to less than full root."
+  impact: "None from installing the tools. Moving the remaining complain-mode profiles to enforce (CIS Level 2) can break the confined program and must be tested per profile."
+  validate: "aa-status  -> profiles loaded, 0 processes unconfined-with-profile"
+  rollback: "n/a"
+  source: "hardening_extras: packages.yml"
+
+BOOT:
+  title: Bootloader protection
+  cis: "1.4"
+  iso: [A.8.9, A.7.8]
+  pci: ["2.2.6"]
+  change: "Nothing is changed. The audit checks the permissions of grub.cfg and whether a GRUB password exists; setting one is left to the image build."
+  why: "Without a GRUB password anyone with console access can append init=/bin/bash and become root without credentials."
+  impact: >-
+    A GRUB superuser without --unrestricted on the default entry makes every reboot wait for a
+    password at the console - unattended reboots (patching!) then hang. Doing it correctly
+    means editing /etc/grub.d/10_linux, which grub2 package updates overwrite.
+  validate: "grep -E 'superusers|password_pbkdf2' /boot/grub/grub.cfg"
+  rollback: "n/a"
+  source: "manual / accepted risk where hypervisor or BMC console access is itself controlled"
+
+PROC:
+  title: Process and kernel self-protection
+  cis: "1.5"
+  iso: [A.8.9, A.8.12]
+  pci: ["2.2.6"]
+  change: >-
+    Core dumps off (limits hard core 0, fs.suid_dumpable=0, systemd-coredump Storage=none);
+    apport and kdump-tools stopped and masked; kernel.kptr_restrict=2, dmesg_restrict=1,
+    yama.ptrace_scope=2, unprivileged_bpf_disabled=1, unprivileged_userns_clone=0,
+    kexec_load_disabled=1, bpf_jit_harden=2.
+  why: >-
+    Core and crash dumps write process/kernel memory (keys, session tokens, passwords) to
+    disk. The sysctls remove primitives used by local privilege-escalation exploits: kernel
+    address leaks, ptrace of sibling processes, unprivileged eBPF and user namespaces.
+  impact: >-
+    No crash dumps for post-mortem debugging. ptrace_scope=2: gdb/strace attach needs root.
+    unprivileged_userns_clone=0 breaks rootless Docker/Podman, bubblewrap/flatpak and browser
+    sandboxes. kexec_load_disabled=1 breaks kdump and kexec-based fast reboot/live-patch flows.
+  validate: "sysctl kernel.kptr_restrict kernel.yama.ptrace_scope fs.suid_dumpable; ulimit -Hc  -> 0; systemctl is-enabled apport kdump-tools  -> masked"
+  rollback: "Override the key in hardening_sysctl_extra / set hardening_disable_kdump: false, re-run --tags os,services."
+  source: "dev-sec sysctl_config, os_security_kernel_enable_core_dump; hardening_extras: services.yml"
+
+BANNER:
+  title: Login warning banners
+  cis: "1.6"
+  iso: [A.5.10, A.8.5]
+  pci: ["2.2.6"]
+  change: "/etc/issue and /etc/issue.net carry a legal notice without OS name/version; sshd shows it before authentication."
+  why: "Removes free version disclosure and provides the notice that makes prosecution/monitoring defensible in many jurisdictions."
+  impact: "Scripts that parse the pre-login text (rare) see different output."
+  validate: "ssh -o PreferredAuthentications=none host  -> banner text, no 'Ubuntu'"
+  rollback: "Restore /etc/issue* from the backup."
+  source: "hardening_extras: banners.yml; dev-sec ssh_banner"
+
+SVC:
+  title: Unneeded services
+  cis: "2.1"
+  iso: [A.8.9, A.8.21]
+  pci: ["2.2.4", "1.2.5"]
+  change: "Units listed in hardening_disable_units are stopped, disabled and masked (packages stay installed). The list is empty by default, so nothing is switched off until you name it. apport and kdump are handled under process hardening."
+  why: "Every running daemon is attack surface and patch burden; several of these run as root and parse untrusted input (D-Bus, block devices)."
+  impact: "Host-role dependent - multipathd/iscsid are boot-critical on SAN/iSCSI roots, fwupd/smartd are wanted on bare metal. That is why this is an inventory decision, not a baseline default."
+  validate: "systemctl list-units --type=service --state=running; ss -tulnp"
+  rollback: "systemctl unmask --now <unit>"
+  source: "hardening_extras: services.yml"
+
+CLIENT:
+  title: Cleartext-protocol clients
+  cis: "2.2"
+  iso: [A.8.9, A.8.24]
+  pci: ["2.2.5"]
+  change: "telnet, ftp, rsh, talk and NIS client packages are purged."
+  why: "Their presence invites sending credentials in cleartext and gives an intruder ready-made lateral-movement tooling."
+  impact: "Admins who use telnet as a port tester need nc / bash /dev/tcp instead."
+  validate: "dpkg -l telnet inetutils-telnet ftp tnftp  -> not installed"
+  rollback: "apt install <package>"
+  source: "hardening_extras: packages.yml"
+
+TIME:
+  title: Time synchronisation
+  cis: "2.3"
+  iso: [A.8.17]
+  pci: ["10.6"]
+  change: "Nothing is changed. The audit checks that exactly one time daemon is active, that it has sources configured and that it runs unprivileged."
+  why: "Log correlation, certificate validation and Kerberos all depend on correct time."
+  impact: "Point the time daemon at your organisation's internal NTP sources instead of the public pool."
+  validate: "timedatectl timesync-status   (or: chronyc tracking; chronyc sources -v)"
+  rollback: "n/a"
+  source: "not changed"
+
+CRON:
+  title: Job schedulers
+  cis: "2.4"
+  iso: [A.8.2, A.8.18]
+  pci: ["7.2"]
+  change: "/etc/crontab and /etc/cron.* become root-only (0600/0700); /etc/cron.allow lists who may use crontab (root)."
+  why: "Cron is a classic persistence and privilege-escalation vector; non-root users should not read or add system jobs."
+  impact: "Application accounts that own crontabs must be added to hardening_cron_allow_users or their jobs stop being editable (existing spool files keep running)."
+  validate: "stat -c '%a %U' /etc/crontab /etc/cron.d; su -s /bin/sh nobody -c 'crontab -l'  -> not allowed"
+  rollback: "rm /etc/cron.allow"
+  source: "dev-sec os_cron_enabled; hardening_extras: cron.yml"
+
+NET-DEV:
+  title: Network devices
+  cis: "3.1"
+  iso: [A.8.20]
+  pci: ["1.2.5"]
+  change: "Nothing is changed here. The audit reports wireless interfaces, Bluetooth and whether IPv6 is in use. IPv6 stays enabled; router advertisements stop being accepted (network stack parameters)."
+  why: "Unused radios and an unmanaged IPv6 stack are unmonitored network paths."
+  impact: "Decide per environment whether IPv6 is used; if not, filter it at the firewall rather than disabling the stack."
+  validate: "ip -6 addr; nmcli radio (if present)"
+  rollback: "n/a"
+  source: "not changed"
+
+NET-MOD:
+  title: Uncommon network protocol modules
+  cis: "3.2"
+  iso: [A.8.9, A.8.20]
+  pci: ["2.2.4"]
+  change: "dccp, tipc, rds and sctp are install->/bin/false and blacklisted."
+  why: "These protocol stacks have a long CVE history and can be auto-loaded by an unprivileged socket() call."
+  impact: "SCTP is used by telecom signalling (SIGTRAN/Diameter) and some clustering software; remove it from the list there."
+  validate: "modprobe -n -v sctp  -> 'install /bin/false'"
+  rollback: "Remove from hardening_disabled_kernel_modules / os_unused_filesystems and re-run."
+  source: "hardening_extras: kernel_modules.yml; dev-sec modprobe"
+
+NET-SYSCTL:
+  title: Network stack parameters
+  cis: "3.3"
+  iso: [A.8.20, A.8.9]
+  pci: ["1.4.3", "2.2.6"]
+  change: >-
+    /etc/sysctl.d/90-dev-sec.conf: no ICMP redirects sent or accepted, no source routing,
+    strict reverse-path filtering, martian logging, SYN cookies, no IPv6 router advertisements.
+    ip_forward is set to 0, except on hosts where Docker is detected (bridge networking needs it).
+  why: "Stops the host being used as a router or having its routing table rewritten by an on-link attacker (redirect/RA spoofing), and drops spoofed-source packets."
+  impact: >-
+    rp_filter=1 drops legitimate traffic on multi-homed hosts with asymmetric routing (use 2
+    there). accept_ra=0 removes SLAAC addresses/default routes - hosts that get IPv6 from RAs
+    lose IPv6 connectivity. log_martians can be noisy on busy segments.
+  validate: "sysctl -a | grep -E 'redirects|rp_filter|accept_source_route|accept_ra '; sysctl --system  (no errors)"
+  rollback: "Set the key in hardening_sysctl_extra and re-run --tags os; or edit /etc/sysctl.d/90-dev-sec.conf and sysctl --system."
+  source: "dev-sec sysctl_config + sysctl_overwrite"
+
+FW:
+  title: Host firewall
+  cis: "4"
+  iso: [A.8.20, A.8.21, A.8.22]
+  pci: ["1.2.5", "1.3.1", "1.4.1"]
+  change: "ufw installed and enabled: default deny inbound, allow outbound, deny routed; inbound allow list from hardening_fw_allow (22/tcp unless you add more). Optionally (hardening_docker_filter) rules in Docker's DOCKER-USER chain restrict which published container ports are reachable from outside."
+  why: "Default-deny inbound means a service started by mistake - or by an attacker - is not reachable. It is the control that turns 'what is listening' into a reviewed list."
+  impact: >-
+    Anything not on the allow list is dropped: add application ports to hardening_fw_allow
+    before applying. Ports published by Docker (-p) bypass ufw entirely (DNAT + FORWARD); they
+    must be bound to 127.0.0.1 or filtered with hardening_docker_filter. Turning that filter on
+    with an incomplete port list cuts off containers that are serving traffic.
+  validate: "ufw status verbose; from another host: nmap -Pn -p- <host>  -> only allow-listed ports open"
+  rollback: "ufw disable   (the rollback guard does this automatically if the run loses access)"
+  source: "hardening_extras: firewall.yml; dev-sec ufw defaults"
+
+SSH:
+  title: SSH server
+  cis: "5.1"
+  iso: [A.8.5, A.8.24, A.5.15, A.8.20]
+  pci: ["2.2.7", "8.3.1", "8.2.8"]
+  change: >-
+    sshd_config is replaced by the dev-sec template: public-key authentication only, no root
+    login, AllowUsers allow list, modern KEX/ciphers/MACs only, MaxAuthTries 4, LoginGraceTime
+    30s, idle timeout 300s x 3, no TCP/agent/X11 forwarding, VERBOSE logging (key
+    fingerprints), pre-auth banner. Socket activation is replaced by a normal ssh.service.
+  why: >-
+    SSH is the administrative front door. Password authentication is what brute-force and
+    credential-stuffing attack; forwarding turns a foothold into a pivot; weak MACs/KEX allow
+    downgrade attacks.
+  impact: >-
+    Password logins stop working - every admin needs an authorized key first (the playbook
+    refuses to proceed otherwise). Users not in AllowUsers are locked out. Forwarding off
+    breaks ssh -L/-R/-D tunnels, ProxyJump THROUGH this host, VS Code Remote and X11 apps.
+    Very old clients (no curve25519/sha2) cannot connect. /etc/ssh/sshd_config.d/* is no longer
+    included, so cloud-init's drop-in is ignored.
+  validate: "sshd -T | grep -Ei 'passwordauth|permitroot|allowusers|maxauthtries'; ssh -o PubkeyAuthentication=no host  -> Permission denied (publickey); ssh-audit host"
+  rollback: "Restore /etc/ssh from access-critical.tar.gz and restart ssh (rollback.sh does exactly this)."
+  source: "dev-sec ssh_hardening + playbooks/group_vars/all/baseline.yml"
+
+SUDO:
+  title: Privilege escalation (sudo, su)
+  cis: "5.2"
+  iso: [A.8.2, A.8.18, A.5.18]
+  pci: ["7.2.1", "10.2.1.2"]
+  change: >-
+    /etc/sudoers.d/90-hardening: use_pty, 15-minute credential cache, 3 password tries, and a
+    dedicated log file where the sudo implementation supports it. su is restricted to members
+    of an empty group via pam_wheel.
+  why: "use_pty stops a sudo'd program from injecting keystrokes into the caller's terminal; su restriction forces privilege changes through sudo, where they are attributable to a person."
+  impact: >-
+    'su - <user>' stops working for everyone except root (use 'sudo -iu <user>'). On Ubuntu
+    25.10+ the active sudo is sudo-rs, which treats 'Defaults logfile' as a syntax error - the
+    role detects this and omits the line; sudo events are then only in journal/auth.log and
+    the audit trail.
+  validate: "visudo -c; sudo -l; su - root as a normal user  -> 'Permission denied'"
+  rollback: "rm /etc/sudoers.d/90-hardening; remove the pam_wheel line from /etc/pam.d/su"
+  source: "hardening_extras: sudo.yml"
+
+PAM:
+  title: Password quality, history and lockout
+  cis: "5.3"
+  iso: [A.5.17, A.8.5]
+  pci: ["8.3.4", "8.3.6", "8.3.7"]
+  change: >-
+    pam_pwquality (14+ characters, 3 character classes, no long repeats/sequences, dictionary
+    check, enforced for root), pam_pwhistory (24 remembered), pam_faillock (5 failures -> 15
+    minute lock, root included), nullok removed. All through pam-auth-update profiles.
+  why: "Stops trivially guessable passwords from being set, password recycling, and online guessing against local accounts (console, su, sudo, and SSH if passwords are ever re-enabled)."
+  impact: >-
+    Existing weak passwords are NOT changed - the policy applies at the next password change.
+    Lockout is a denial-of-service lever: five bad attempts lock an account for 15 minutes,
+    including root at the console (faillock --user <u> --reset). Service accounts that
+    authenticate with passwords can be locked by a misconfigured client.
+  validate: "passwd  (try 'Password1' -> rejected); faillock --user <u>; grep -E 'pwquality|pwhistory|faillock' /etc/pam.d/common-*"
+  rollback: "rollback.sh, or: rm /usr/share/pam-configs/{pwhistory,faillock,faillock_authfail}; pam-auth-update --package"
+  source: "hardening_extras: pam.yml; dev-sec os_auth_retries / os_auth_lockout_time"
+
+ACCT:
+  title: Accounts and shell environment
+  cis: "5.4"
+  iso: [A.5.16, A.5.17, A.5.18, A.8.5]
+  pci: ["8.2.6", "8.2.8", "8.3.9"]
+  change: >-
+    Password max age 365 days, min age 1, warning 7, lock 45 days after expiry (new accounts);
+    max/min age applied to existing human accounts; system accounts (UID 100-999) get nologin
+    and a locked password; umask 027; idle shells closed after 900s; home directories 0700.
+  why: "Bounds the lifetime of a stolen credential, removes dormant accounts, and stops new files being world-readable by default."
+  impact: >-
+    A password that is already older than the new maximum expires immediately. Service
+    accounts with UID < 1000 lose their shell - 'su - postgres' style administration breaks
+    unless the account is in os_ignore_users. umask 027 breaks software that relies on
+    world-readable files it creates (some web roots, shared build directories). TMOUT kills
+    idle interactive shells, including a forgotten screen-less long job's parent shell.
+  validate: "chage -l <user>; useradd -D | grep INACTIVE; umask; echo $TMOUT"
+  rollback: "Restore /etc/login.defs from the backup; chage -M 99999 <user>; rm /etc/profile.d/{tmout.sh,50-hardening-umask.sh}"
+  source: "hardening_extras: accounts.yml; dev-sec user_accounts, os_security_auto_logout"
+
+LOG:
+  title: System logging
+  cis: "6.1"
+  iso: [A.8.15, A.8.16]
+  pci: ["10.2", "10.3", "10.5"]
+  change: "journald persistent + compressed with a size cap; existing /var/log files lose world-read; optional rsyslog forwarding with a disk-assisted queue (hardening_syslog_remote_host), over TLS when hardening_syslog_remote_tls is set."
+  why: "Logs that only exist on the host are erased by whoever compromises the host. Forwarding is the control; the rest is hygiene."
+  impact: "Members of 'adm' can still read logs; other local users cannot. Forwarding needs a reachable collector; without TLS the logs cross the network in clear text. With TLS the collector's certificate must chain to the configured CA and match the permitted name, or nothing is sent."
+  validate: "journalctl --disk-usage; logger -t test hello && check it on the collector; find /var/log -perm /o+r -type f"
+  rollback: "rm /etc/systemd/journald.conf.d/50-hardening.conf /etc/rsyslog.d/60-hardening-remote.conf; restart the services"
+  source: "hardening_extras: logging.yml"
+
+AUDIT:
+  title: Kernel audit trail (auditd)
+  cis: "6.2 (Level 2)"
+  iso: [A.8.15, A.8.16, A.8.2]
+  pci: ["10.2.1", "10.2.2", "10.3.2", "10.3.4"]
+  change: >-
+    auditd installed and enabled with a CIS-style rule set (identity files, sudoers, privilege
+    use, every setuid binary, permission changes, deletions, mounts, time, modules, MAC
+    policy), audit=1 on the kernel command line, immutable rule set (-e 2).
+  why: "Syslog records what programs choose to say; the audit trail records what the kernel saw a user do, with the original login UID preserved across sudo/su. It is the forensic record."
+  impact: >-
+    CPU and disk: a busy host can produce gigabytes per day - size and forward accordingly.
+    -e 2 means rule changes need a reboot. CIS's keep_logs + halt-on-full is only safe with a
+    dedicated /var/log/audit filesystem; the playbook checks for one and otherwise uses
+    bounded rotation, which leaves two CIS items open by design (accept them in exceptions.yml).
+  validate: "auditctl -s  -> enabled 2; auditctl -l | wc -l; sudo -l; ausearch -k user_emulation -ts recent; aureport --summary"
+  rollback: "rm /etc/audit/rules.d/*hardening* /etc/audit/rules.d/99-finalize.rules; reboot (immutable)"
+  source: "dev-sec os_auditd_*; hardening_extras: auditd.yml"
+
+AIDE:
+  title: File integrity monitoring
+  cis: "6.3"
+  iso: [A.8.16, A.8.9]
+  pci: ["11.5.2"]
+  change: "AIDE installed, baseline database built after hardening and rebuilt at the end of later runs only when files changed, daily check timer enabled."
+  why: "Detects unauthorised modification of binaries and configuration - the question 'what did they change' after an incident."
+  impact: >-
+    The daily run is I/O heavy for a few minutes. Every legitimate change (patching!) shows up
+    as a difference until the database is re-initialised - without a process for reviewing and
+    re-baselining, the report becomes noise. The database on the host can be rewritten by root:
+    ship reports off-host.
+  validate: "aide --check --config /etc/aide/aide.conf  (or: systemctl start dailyaidecheck.service; journalctl -u dailyaidecheck)"
+  rollback: "systemctl disable --now dailyaidecheck.timer; apt purge aide aide-common"
+  source: "hardening_extras: aide.yml"
+
+PERM:
+  title: System file permissions
+  cis: "7.1"
+  iso: [A.8.3, A.5.15]
+  pci: ["7.2"]
+  change: "Group/world write removed from files in system PATH directories; passwd/shadow family set to canonical owners and modes; setuid bit removed from a short deny list (dev-sec)."
+  why: "A writable file on root's PATH or a readable shadow file is a direct privilege-escalation or offline-cracking primitive."
+  impact: "dev-sec removes setuid from ssh-keysign (host-based SSH auth), uuidd, pppd, mtr, arping. Enabling os_security_suid_sgid_remove_from_unknown would strip every setuid bit not on its allow list - not enabled."
+  validate: "find / -xdev -perm -0002 -type f; find / -xdev \\( -nouser -o -nogroup \\); find / -xdev -perm -4000 -type f"
+  rollback: "dpkg-statoverride / reinstall the package to restore a mode"
+  source: "dev-sec minimize_access, suid_sgid"
+
+USERS:
+  title: Local user and group integrity
+  cis: "7.2"
+  iso: [A.5.16, A.5.18]
+  pci: ["8.2.1", "8.2.2"]
+  change: "Home directories are set to 0700 (dev-sec). Otherwise nothing is changed: the audit checks for duplicate IDs and names, empty password fields, missing groups and risky dot files, which need a person to resolve."
+  why: "Duplicate IDs and empty password fields break accountability and authentication assumptions."
+  impact: "Users who share files from their home directory through group or world permissions lose that."
+  validate: "pwck -r; grpck -r"
+  rollback: "n/a"
+  source: "not changed"
+
+ENV:
+  title: Environment-specific exposure
+  cis: "-"
+  iso: [A.8.22, A.8.9]
+  pci: ["2.2.3"]
+  change: "Nothing automated; reported for a decision."
+  why: "A hypervisor shared folder mounted read-write gives guest root direct access to host files, which defeats the VM boundary in the direction that matters. cloud-init on a non-cloud VM can re-apply user/SSH settings."
+  impact: "Unmounting the share removes the convenience it was added for."
+  validate: "findmnt -t vboxsf,9p,virtiofs; cloud-init status"
+  rollback: "n/a"
+  source: "manual"

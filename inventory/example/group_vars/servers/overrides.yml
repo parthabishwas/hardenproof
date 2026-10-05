@@ -1,0 +1,44 @@
+---
+# Per-environment decisions. Everything here overrides playbooks/group_vars/all/baseline.yml
+# and roles/hardening_extras/defaults/main.yml - keep the reason next to each line, because
+# this file is what an auditor will ask you to justify.
+
+# Accounts allowed to log in over SSH. MUST include ansible_user or the run refuses to start.
+hardening_ssh_allow_users: [deploy]
+
+# Inbound allow list. Everything else is dropped once the firewall is enabled.
+hardening_fw_allow:
+  - { port: "22", proto: tcp, from: any, comment: "SSH administration" }
+  # - { port: "443", proto: tcp, from: any, comment: "HTTPS" }
+  # - { port: "5432", proto: tcp, from: 10.0.5.0/24, comment: "PostgreSQL from the app subnet" }
+
+# Reboot automatically when a change needs it (kernel command line, /tmp as tmpfs).
+hardening_allow_reboot: false
+
+# Install pending package updates as part of the run. Restarts services; plan a window.
+hardening_apply_updates: false
+
+# cis (default) or pci (90-day password age, 30-minute lockout).
+hardening_profile: cis
+
+# Central log collector. Leaving it empty keeps the "logs are forwarded" finding open.
+hardening_syslog_remote_host: ""
+# hardening_syslog_remote_tls: true
+# hardening_syslog_remote_ca_file: /etc/ssl/certs/ca-certificates.crt
+
+# Service accounts below UID 1000 that people really `su -` into (postgres, oracle ...).
+os_ignore_users: []
+
+# Users other than root who own crontabs.
+hardening_cron_allow_users: [root]
+
+# Units to stop, disable and mask. Empty on purpose: what is "unneeded" depends on the host.
+hardening_disable_units: []
+
+# Docker hosts: restrict which published container ports are reachable from outside.
+# hardening_docker_filter: true
+# hardening_docker_published_allow:
+#   - { port: 443, proto: tcp }
+
+# Ubuntu 22.04 / 24.04: move /tmp to a tmpfs (at the next boot) so it can be noexec.
+# hardening_tmp_tmpfs: true

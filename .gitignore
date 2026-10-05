@@ -1,0 +1,14 @@
+.venv/
+collections/
+vendor/
+.secrets/
+*.retry
+__pycache__/
+.playwright-mcp/
+
+# audit evidence, run logs and generated reports are per-host data
+reports/
+
+# real inventories name your hosts and users; only the template is published
+inventory/*
+!inventory/example/

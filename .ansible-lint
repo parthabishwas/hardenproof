@@ -1,0 +1,17 @@
+---
+# Rules are relaxed only where the reason is written down.
+exclude_paths:
+  - .venv/
+  - collections/
+  - vendor/
+  - reports/
+  - .github/
+skip_list:
+  - var-naming[no-role-prefix]   # dev-sec's own variables (os_*, ssh_*) are set from our files
+  - run-once[task]
+  - yaml[line-length]
+warn_list:
+  - command-instead-of-shell
+  - no-changed-when
+  - command-instead-of-module    # multi-step shell blocks (rollback, revert) use systemctl/tar directly
+  - no-handler                   # a few steps must happen immediately, before the next task

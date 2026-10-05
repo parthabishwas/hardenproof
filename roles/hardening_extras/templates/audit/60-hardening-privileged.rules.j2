@@ -1,0 +1,5 @@
+## Managed by Ansible (hardening_extras). Generated from the setuid/setgid binaries found on
+## this host at apply time - re-run the playbook after installing software.
+{% for b in hardening_priv_binaries.stdout_lines %}
+-a always,exit -F path={{ b }} -F perm=x -F auid>=1000 -F auid!=unset -k privileged
+{% endfor %}

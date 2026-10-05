@@ -1,0 +1,110 @@
+---
+# /dev/shm (noexec) is handled by dev-sec via fstab. /tmp on current Ubuntu is a systemd
+# tmp.mount tmpfs, so the systemd-native way is a drop-in rather than an fstab line.
+- name: Check how /tmp is mounted
+  ansible.builtin.command: findmnt -rn -o SOURCE,FSTYPE,OPTIONS /tmp
+  register: hardening_tmp_mount
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Where /tmp already is a tmp.mount tmpfs, append noexec to whatever options that unit
+# ships with (they differ between releases), instead of restating the whole list.
+- name: Read the options of the tmp.mount unit
+  ansible.builtin.shell: |
+    set -o pipefail
+    systemctl cat tmp.mount 2>/dev/null | awk '/^Options=/{print substr($0, 9); exit}'
+  args:
+    executable: /bin/bash
+  register: hardening_tmp_unit_opts
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Add noexec to the tmp.mount unit
+  when:
+    - hardening_tmp_noexec | bool
+    - hardening_tmp_mount.rc == 0
+    - "'tmpfs' in hardening_tmp_mount.stdout"
+    - hardening_tmp_unit_opts.stdout | length > 0
+    - "'noexec' not in hardening_tmp_unit_opts.stdout.split(',')"
+  block:
+    - name: Create tmp.mount drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/tmp.mount.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write tmp.mount drop-in
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tmp.mount.d/50-hardening.conf
+        content: |
+          # Managed by Ansible (hardening_extras)
+          [Mount]
+          Options={{ hardening_tmp_unit_opts.stdout }},noexec
+        owner: root
+        group: root
+        mode: "0644"
+      register: hardening_tmp_dropin
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: hardening_tmp_dropin is changed
+
+    - name: Apply noexec to the live /tmp mount
+      ansible.posix.mount:
+        path: /tmp
+        state: remounted
+        opts: noexec
+      when: "'noexec' not in hardening_tmp_mount.stdout"
+
+# /tmp on the root filesystem (Ubuntu 22.04 / 24.04 default): mount options cannot be set
+# without making it a mount. systemd ships tmp.mount for that; it is opt-in here because it
+# changes where /tmp lives.
+#
+# The unit is only INSTALLED here. Enabling it makes systemd mount it at the next
+# daemon-reload, which would hide the live contents of /tmp (sockets, lock files, Ansible's
+# own module files) in the middle of the run. The playbook's last play enables it immediately
+# before the reboot instead.
+- name: Install the tmpfs unit for /tmp
+  when:
+    - hardening_tmp_mount.rc != 0
+    - hardening_tmp_tmpfs | bool
+  block:
+    - name: Install tmp.mount with hardened options
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tmp.mount
+        content: |
+          # Managed by Ansible (hardening_extras)
+          [Unit]
+          Description=Temporary Directory /tmp
+          ConditionPathIsSymbolicLink=!/tmp
+          DefaultDependencies=no
+          Conflicts=umount.target
+          Before=local-fs.target umount.target
+          After=swap.target
+
+          [Mount]
+          What=tmpfs
+          Where=/tmp
+          Type=tmpfs
+          Options=mode=1777,strictatime,nosuid,nodev{{ ',noexec' if hardening_tmp_noexec | bool else '' }},size=50%%,nr_inodes=1m
+
+          [Install]
+          WantedBy=local-fs.target
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Report when /tmp cannot take mount options
+  ansible.builtin.debug:
+    msg: >-
+      /tmp is {{ 'on the root filesystem' if hardening_tmp_mount.rc != 0 else 'not a tmpfs (' ~ hardening_tmp_mount.stdout ~ ')' }};
+      nodev/nosuid/noexec were not applied. Set hardening_tmp_tmpfs: true to move /tmp to a
+      tmpfs at the next boot, or add the options to its fstab entry yourself.
+  when:
+    - (hardening_tmp_mount.rc != 0 and not hardening_tmp_tmpfs | bool) or
+      (hardening_tmp_mount.rc == 0 and 'tmpfs' not in hardening_tmp_mount.stdout)

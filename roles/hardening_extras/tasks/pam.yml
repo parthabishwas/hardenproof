@@ -1,0 +1,67 @@
+---
+# Debian/Ubuntu build /etc/pam.d/common-* from profiles in /usr/share/pam-configs via
+# pam-auth-update. Editing common-* by hand makes pam-auth-update refuse to manage the files
+# afterwards, so everything here is done through profiles. faillock comes from dev-sec.
+- name: Create pwquality drop-in directory
+  ansible.builtin.file:
+    path: /etc/security/pwquality.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Password quality policy
+  ansible.builtin.copy:
+    dest: /etc/security/pwquality.conf.d/50-hardening.conf
+    content: |
+      # Managed by Ansible (hardening_extras)
+      {% for k, v in hardening_pwquality.items() %}
+      {{ k }} = {{ v }}
+      {% endfor %}
+      {% if hardening_pwquality_enforce_for_root %}
+      enforce_for_root
+      {% endif %}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Password history profile
+  ansible.builtin.copy:
+    dest: /usr/share/pam-configs/pwhistory
+    content: |
+      Name: pwhistory password history checking
+      Default: yes
+      Priority: 1024
+      Password-Type: Primary
+      Password:
+      	requisite	pam_pwhistory.so remember={{ hardening_pwhistory_remember }} enforce_for_root try_first_pass use_authtok
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Rebuild PAM stack
+
+- name: Stop pam_unix accepting empty passwords
+  ansible.builtin.replace:
+    path: /usr/share/pam-configs/unix
+    regexp: '\s+nullok\b'
+    replace: ''
+  when: hardening_pam_remove_nullok | bool
+  notify: Rebuild PAM stack
+
+- name: Apply PAM changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Read resulting PAM stack
+  ansible.builtin.command: grep -hE '^\s*(auth|password|account)\s' /etc/pam.d/common-auth /etc/pam.d/common-password /etc/pam.d/common-account
+  register: hardening_pam_stack
+  changed_when: false
+  check_mode: false
+
+- name: The PAM stack must still authenticate (fail early, while the rollback guard is armed)
+  ansible.builtin.assert:
+    that:
+      - hardening_pam_stack.stdout is search('auth\s.*pam_unix\.so')
+      - hardening_pam_stack.stdout is search('password\s.*pam_unix\.so')
+      - hardening_pam_stack.stdout is search('account\s.*pam_unix\.so')
+    fail_msg: "pam_unix is missing from the generated stack - do not disarm the rollback guard"
+  when: not ansible_check_mode

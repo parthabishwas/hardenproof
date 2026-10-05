@@ -1,0 +1,9 @@
+HardenProof
+Copyright 2026 Partha Bishwas
+
+Licensed under the Apache License, Version 2.0.
+
+HardenProof does not bundle third-party code. At install and audit time it downloads, at
+pinned versions:
+  - devsec.hardening (https://github.com/dev-sec/ansible-collection-hardening), Apache-2.0
+  - Lynis (https://github.com/CISOfy/lynis), GPL-3.0, executed as a separate program

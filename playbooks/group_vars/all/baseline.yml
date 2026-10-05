@@ -1,0 +1,108 @@
+---
+# Hardening baseline shared by every environment.
+#
+# This file is the list of places where we deliberately do NOT take the dev-sec defaults,
+# and why. Environment-specific overrides go in inventory/<env>/group_vars/<group>/.
+# Variables of the gap-closing role are documented in roles/hardening_extras/defaults/main.yml.
+
+# ============================ compliance profile ================================
+# cis: thresholds of the CIS benchmark.
+# pci: additionally meets PCI DSS v4.0.1 8.3.9 (90-day password change where the password
+#      is the only factor) and 8.3.4 (30-minute lockout). Stricter than CIS, so every CIS
+#      check still passes.
+hardening_profile: cis
+
+# ============================ cross-cutting decisions ==========================
+# Key-only SSH. The playbook refuses to disable passwords until it has proven that key login
+# works from the controller.
+hardening_ssh_password_auth: false
+# Accounts allowed to log in over SSH. MUST contain the automation account.
+hardening_ssh_allow_users: []
+hardening_ssh_port: 22
+# Minutes before the access-critical configuration (PAM, sudoers, sshd, firewall) is restored
+# automatically if the run does not finish and prove it can still log in.
+hardening_guard_minutes: 20
+# Reboot automatically when a change needs it (kernel cmdline, kernel update).
+hardening_allow_reboot: false
+
+# sysctl values on top of the dev-sec list (sysctl_config in the role defaults).
+hardening_sysctl_base:
+  # dev-sec sets 0. Disabling TCP timestamps removes PAWS and RTT measurement for a
+  # negligible information-leak gain; neither CIS nor the kernel community recommend it.
+  net.ipv4.tcp_timestamps: 1
+  kernel.dmesg_restrict: 1
+  net.core.bpf_jit_harden: 2
+# Applied only when Docker is detected: bridge networking needs forwarding. The exposure is
+# bounded by the FORWARD chain policy (drop), not by the sysctl.
+hardening_sysctl_docker:
+  net.ipv4.ip_forward: 1
+hardening_sysctl_extra: {}
+
+# ============================ devsec.hardening.os_hardening ====================
+sysctl_overwrite: >-
+  {{ hardening_sysctl_base
+     | combine(hardening_sysctl_docker if (hardening_docker_present | default(false)) else {})
+     | combine(hardening_sysctl_extra) }}
+
+# dev-sec default is 60 days. CIS asks for <= 365; frequent forced rotation produces weaker
+# passwords (NIST SP 800-63B). Set 90 if PCI DSS 8.3.9 applies and MFA is not in place.
+os_auth_pw_max_age: "{{ 90 if hardening_profile == 'pci' else 365 }}"
+os_auth_pw_min_age: 1
+os_auth_pw_warn_age: 7
+# pam_faillock: 5 failures -> locked for 15 minutes, root included (even_deny_root).
+os_auth_retries: 5
+os_auth_lockout_time: "{{ 1800 if hardening_profile == 'pci' else 900 }}"
+# dev-sec would install passwdqc; CIS (and our audit) is written against pwquality, which
+# hardening_extras configures. One password-quality module, not two.
+os_auth_pam_passwdqc_enable: false
+# dev-sec's login.defs template replaces the whole file and sets ENCRYPT_METHOD SHA512 -
+# a downgrade from Ubuntu's yescrypt. hardening_extras edits the four relevant lines instead.
+os_login_defs_enabled: false
+# dev-sec would chmod 0750 the su binary (undone by the next util-linux update).
+# hardening_extras restricts su through pam_wheel instead, which survives updates.
+os_security_users_allow: [change_user]
+# hidepid=2 on /proc is not supported by systemd (breaks logind/polkit session tracking).
+hidepid_option: "0"
+# Idle shells are closed after 15 minutes (readonly TMOUT).
+os_security_auto_logout: 900
+# vfat (EFI system partition) and squashfs (snap) are left out on purpose.
+os_unused_filesystems: [cramfs, freevxfs, jffs2, hfs, hfsplus, udf, dccp, rds, sctp, tipc]
+# dev-sec strips login shells and passwords from all accounts with UID 100-999.
+# List service accounts that people really do `su -` into (postgres, oracle ...).
+os_ignore_users: []
+# dev-sec resolves its per-OS variables by os_family, so Ubuntu gets Debian's 0755 root:root
+# for /var/log. Ubuntu's rsyslog runs as 'syslog' and needs the distribution default
+# (0775 root:syslog, re-applied by systemd-tmpfiles at every boot) to create new log files.
+os_mnt_var_log_dir_mode: "0775"
+os_mnt_var_log_group: syslog
+# Audit log behaviour. CIS wants logs never deleted and the host stopped when the audit
+# volume is full. That is only safe when /var/log/audit is its own filesystem: on a single
+# root filesystem "never delete" fills / and "single" then takes the host off the network.
+# The playbook detects which case applies. Without a dedicated filesystem it uses bounded
+# rotation (10 x 50 MB) and the two matching CIS checks stay open - record them in
+# exceptions.yml until the filesystem exists.
+os_auditd_max_log_file: 50
+os_auditd_num_logs: 10
+os_auditd_max_log_file_action: "{{ 'keep_logs' if (hardening_audit_dedicated_fs | default(false)) else 'rotate' }}"
+os_auditd_space_left_action: "{{ 'email' if (hardening_audit_dedicated_fs | default(false)) else 'syslog' }}"
+os_auditd_admin_space_left_action: "{{ 'single' if (hardening_audit_dedicated_fs | default(false)) else 'suspend' }}"
+
+# ============================ devsec.hardening.ssh_hardening ===================
+ssh_server_ports: ["{{ hardening_ssh_port }}"]
+# dev-sec listens on IPv4 only by default, which locks out anyone who reaches the host over
+# IPv6. Listen on both where the host has a global IPv6 address.
+ssh_listen_to: "{{ ['0.0.0.0', '::'] if (hardening_ipv6_in_use | default(false)) else ['0.0.0.0'] }}"
+ssh_server_password_login: "{{ hardening_ssh_password_auth }}"
+sshd_authenticationmethods: "{{ 'any' if hardening_ssh_password_auth else 'publickey' }}"
+ssh_permit_root_login: "no"
+ssh_allow_users: "{{ hardening_ssh_allow_users | join(' ') }}"
+# dev-sec default is 2. With more than two keys in an agent that already fails with
+# "Too many authentication failures" before the right key is offered. CIS: <= 4.
+ssh_max_auth_retries: 4
+ssh_banner: true
+ssh_banner_path: /etc/issue.net
+ssh_print_last_log: true
+# sftp stays on (scp and Ansible use it) but without dev-sec's chroot to /home/%u, which
+# requires root-owned home directories and otherwise breaks every sftp session.
+sftp_enabled: true
+sftp_chroot: false

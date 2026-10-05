@@ -1,0 +1,271 @@
+#meta	script_version	1.1.1
+#meta	hostname	web01
+#meta	os	Ubuntu 26.04.1 LTS
+#meta	kernel	7.0.0-34-generic
+#meta	virt	oracle
+#meta	date_utc	2026-10-01T06:01:34Z
+#meta	docker	1
+FS-01	1.1.1	L1	FS-MOD	PASS	Kernel module 'cramfs' is disabled	install->false, blacklisted, not loaded
+FS-02	1.1.1	L1	FS-MOD	PASS	Kernel module 'freevxfs' is disabled	install->false, blacklisted, not loaded
+FS-03	1.1.1	L1	FS-MOD	PASS	Kernel module 'hfs' is disabled	install->false, blacklisted, not loaded
+FS-04	1.1.1	L1	FS-MOD	PASS	Kernel module 'hfsplus' is disabled	install->false, blacklisted, not loaded
+FS-05	1.1.1	L1	FS-MOD	PASS	Kernel module 'jffs2' is disabled	install->false, blacklisted, not loaded
+FS-06	1.1.1	L2	FS-MOD	NA	Kernel module 'overlayfs' is disabled	Docker (overlay2 storage driver) requires overlayfs - documented exception
+FS-07	1.1.1	L2	FS-MOD	MANUAL	Kernel module 'squashfs' is disabled	built into the kernel; cannot be disabled via modprobe
+FS-08	1.1.1	L2	FS-MOD	PASS	Kernel module 'udf' is disabled	install->false, blacklisted, not loaded
+FS-09	1.1.1	L1	FS-MOD	PASS	Kernel module 'usb-storage' is disabled	install->false, blacklisted, not loaded
+FS-10	1.1.2	L1	FS-PART	PASS	/tmp is a separate filesystem	tmpfs tmpfs
+FS-11-nodev	1.1.2	L1	FS-PART	PASS	/tmp is mounted with nodev	rw,nosuid,nodev,noexec,size=5795888k,nr_inodes=1048576,inode64,usrquota
+FS-11-nosuid	1.1.2	L1	FS-PART	PASS	/tmp is mounted with nosuid	rw,nosuid,nodev,noexec,size=5795888k,nr_inodes=1048576,inode64,usrquota
+FS-11-noexec	1.1.2	L1	FS-PART	PASS	/tmp is mounted with noexec	rw,nosuid,nodev,noexec,size=5795888k,nr_inodes=1048576,inode64,usrquota
+FS-12	1.1.2	L1	FS-PART	PASS	/dev/shm is a separate filesystem	tmpfs tmpfs
+FS-13-nodev	1.1.2	L1	FS-PART	PASS	/dev/shm is mounted with nodev	rw,nosuid,nodev,noexec,inode64,usrquota
+FS-13-nosuid	1.1.2	L1	FS-PART	PASS	/dev/shm is mounted with nosuid	rw,nosuid,nodev,noexec,inode64,usrquota
+FS-13-noexec	1.1.2	L1	FS-PART	PASS	/dev/shm is mounted with noexec	rw,nosuid,nodev,noexec,inode64,usrquota
+FS-14	1.1.2	L2	FS-PART	FAIL	/home is a separate filesystem	lives on the root filesystem
+FS-15-nodev	1.1.2	L1	FS-PART	NA	/home is mounted with nodev	/home is not a separate mount
+FS-15-nosuid	1.1.2	L1	FS-PART	NA	/home is mounted with nosuid	/home is not a separate mount
+FS-16	1.1.2	L2	FS-PART	FAIL	/var is a separate filesystem	lives on the root filesystem
+FS-17-nodev	1.1.2	L1	FS-PART	NA	/var is mounted with nodev	/var is not a separate mount
+FS-17-nosuid	1.1.2	L1	FS-PART	NA	/var is mounted with nosuid	/var is not a separate mount
+FS-18	1.1.2	L2	FS-PART	FAIL	/var/tmp is a separate filesystem	lives on the root filesystem
+FS-19-nodev	1.1.2	L1	FS-PART	NA	/var/tmp is mounted with nodev	/var/tmp is not a separate mount
+FS-19-nosuid	1.1.2	L1	FS-PART	NA	/var/tmp is mounted with nosuid	/var/tmp is not a separate mount
+FS-19-noexec	1.1.2	L1	FS-PART	NA	/var/tmp is mounted with noexec	/var/tmp is not a separate mount
+FS-20	1.1.2	L2	FS-PART	FAIL	/var/log is a separate filesystem	lives on the root filesystem
+FS-21-nodev	1.1.2	L1	FS-PART	NA	/var/log is mounted with nodev	/var/log is not a separate mount
+FS-21-nosuid	1.1.2	L1	FS-PART	NA	/var/log is mounted with nosuid	/var/log is not a separate mount
+FS-21-noexec	1.1.2	L1	FS-PART	NA	/var/log is mounted with noexec	/var/log is not a separate mount
+FS-22	1.1.2	L2	FS-PART	FAIL	/var/log/audit is a separate filesystem	lives on the root filesystem
+FS-23-nodev	1.1.2	L1	FS-PART	NA	/var/log/audit is mounted with nodev	/var/log/audit is not a separate mount
+FS-23-nosuid	1.1.2	L1	FS-PART	NA	/var/log/audit is mounted with nosuid	/var/log/audit is not a separate mount
+FS-23-noexec	1.1.2	L1	FS-PART	NA	/var/log/audit is mounted with noexec	/var/log/audit is not a separate mount
+PKG-01	1.2	L1	PKG	PASS	Updates, patches and security software are installed	0 upgradable packages (as of last apt update: 2026-10-01 05:15:51)
+PKG-02	1.2	L1	PKG	MANUAL	Package repositories and GPG keys are approved	sources: docker.list nodesource.sources ubuntu.sources ubuntu.sources.curtin.orig 
+PKG-03	1.2	X	PKG	PASS	Automatic security updates are enabled	APT::Periodic::Unattended-Upgrade=1
+PKG-04	1.2	X	PKG	PASS	No reboot pending for installed kernel/library updates	no /var/run/reboot-required
+MAC-01	1.3.1	L1	MAC	PASS	AppArmor and apparmor-utils are installed	
+MAC-02	1.3.1	L1	MAC	PASS	AppArmor is enabled at boot	lsm=lockdown,capability,landlock,yama,apparmor,ima,evm
+MAC-03	1.3.1	L1	MAC	PASS	All AppArmor profiles are in enforce or complain mode	loaded=182 enforce=106 complain=2 unconfined_with_profile=0
+MAC-04	1.3.1	L2	MAC	FAIL	All AppArmor profiles are enforcing	loaded=182 enforce=106 complain=2 unconfined_with_profile=0
+BOOT-01	1.4	L1	BOOT	FAIL	Bootloader password is set	no superusers/password_pbkdf2 in grub.cfg
+BOOT-02	1.4	L1	BOOT	PASS	Access to bootloader config is restricted	mode=600 owner=root group=root
+PROC-01	1.5	L1	PROC	PASS	Address space layout randomization is enabled	running=2 persisted=2
+PROC-02	1.5	L1	PROC	PASS	ptrace_scope is restricted	kernel.yama.ptrace_scope=2
+PROC-03	1.5	L1	PROC	PASS	Core dumps are restricted	hard core 0; fs.suid_dumpable=0
+PROC-04	1.5	L1	PROC	PASS	prelink is not installed	not installed
+PROC-05	1.5	L1	PROC	PASS	Automatic error reporting (apport) is disabled	apport disabled or absent
+PROC-06	1.5	X	PROC	PASS	Kernel pointers are hidden from all users	running=2 persisted=2
+PROC-07	1.5	X	PROC	PASS	dmesg is restricted to privileged users	running=1 persisted=1
+PROC-08	1.5	X	PROC	PASS	Hardlink protection is enabled	running=1 persisted=1
+PROC-09	1.5	X	PROC	PASS	Symlink protection is enabled	running=1 persisted=1
+PROC-10	1.5	X	PROC	PASS	Unprivileged eBPF is disabled	running=1 persisted=1
+PROC-11	1.5	X	PROC	PASS	kdump (kernel crash dumps) is not enabled without a need	kdump-tools not enabled
+BAN-motd	1.6	L1	BANNER	PASS	/etc/motd carries a legal warning banner without OS details	
+BAN-motd-perm	1.6	L1	BANNER	NA	Permissions on /etc/motd are 644 root:root or stricter	file does not exist
+BAN-issue	1.6	L1	BANNER	PASS	/etc/issue carries a legal warning banner without OS details	Authorized users only. All activity on this system is logged
+BAN-issue-perm	1.6	L1	BANNER	PASS	Permissions on /etc/issue are 644 root:root or stricter	mode=644 owner=root group=root
+BAN-issuenet	1.6	L1	BANNER	PASS	/etc/issue.net carries a legal warning banner without OS details	Authorized users only. All activity on this system is logged
+BAN-issuenet-perm	1.6	L1	BANNER	PASS	Permissions on /etc/issue.net are 644 root:root or stricter	mode=644 owner=root group=root
+GDM-01	1.7	L1	BANNER	NA	GDM is hardened or removed	no display manager installed (server)
+SVC-01	2.1	L1	SVC	PASS	autofs is not in use	package autofs not installed
+SVC-02	2.1	L1	SVC	PASS	avahi daemon is not in use	package avahi-daemon not installed
+SVC-03	2.1	L1	SVC	PASS	DHCP server is not in use	package isc-dhcp-server not installed
+SVC-04	2.1	L1	SVC	PASS	DNS server is not in use	package bind9 not installed
+SVC-05	2.1	L1	SVC	PASS	dnsmasq is not in use	package dnsmasq not installed
+SVC-06	2.1	L1	SVC	PASS	FTP server is not in use	package vsftpd not installed
+SVC-07	2.1	L1	SVC	PASS	LDAP server is not in use	package slapd not installed
+SVC-08	2.1	L1	SVC	PASS	Message access (IMAP/POP3) server is not in use	package dovecot-core not installed
+SVC-09	2.1	L1	SVC	PASS	NFS server is not in use	package nfs-kernel-server not installed
+SVC-10	2.1	L1	SVC	PASS	NIS server is not in use	package ypserv not installed
+SVC-11	2.1	L1	SVC	PASS	Print server (CUPS) is not in use	package cups not installed
+SVC-12	2.1	L1	SVC	PASS	rpcbind is not in use	package rpcbind not installed
+SVC-13	2.1	L1	SVC	PASS	rsync daemon is not in use	package rsync installed but units disabled and inactive
+SVC-14	2.1	L1	SVC	PASS	Samba file server is not in use	package samba not installed
+SVC-15	2.1	L1	SVC	PASS	SNMP daemon is not in use	package snmpd not installed
+SVC-16	2.1	L1	SVC	PASS	TFTP server is not in use	package tftpd-hpa not installed
+SVC-17	2.1	L1	SVC	PASS	Web proxy server is not in use	package squid not installed
+SVC-18	2.1	L1	SVC	PASS	Web server is not in use	package apache2 not installed
+SVC-19	2.1	L1	SVC	PASS	xinetd is not in use	package xinetd not installed
+SVC-20	2.1	L2	SVC	PASS	X window server is not installed	not installed
+SVC-21	2.1	L1	SVC	PASS	Mail transfer agent is local-only	no non-loopback listener on 25/465/587
+SVC-22	2.1	L1	SVC	MANUAL	Only approved services listen on a network interface	tcp/0.0.0.0:22(sshd) tcp/127.0.0.53%lo:53(systemd-resolve) tcp/127.0.0.54:53(systemd-resolve) udp/10.0.2.15%enp0s3:68(systemd-network) udp/127.0.0.1:323(chronyd) udp/127.0.0.53%lo:53(systemd-resolve) udp/127.0.0.54:53(systemd-resolve) udp/[::1]:323(chronyd) 
+SVC-23	2.1	X	SVC	MANUAL	No unneeded hardware/desktop helper services are enabled	review: fwupd.service 
+CLI-01	2.2	L1	CLIENT	PASS	NIS client is not installed	not installed
+CLI-02	2.2	L1	CLIENT	PASS	rsh client is not installed	not installed
+CLI-03	2.2	L1	CLIENT	PASS	talk client is not installed	not installed
+CLI-04	2.2	L1	CLIENT	PASS	telnet client is not installed	not installed
+CLI-05	2.2	L2	CLIENT	PASS	LDAP client is not installed	not installed
+CLI-06	2.2	L1	CLIENT	PASS	ftp client is not installed	not installed
+TIME-01	2.3	L1	TIME	PASS	A single time synchronization daemon is in use	chrony.service 
+TIME-02	2.3	L1	TIME	PASS	chrony has authorized time sources configured	1.ntp.ubuntu.com 2.ntp.ubuntu.com 3.ntp.ubuntu.com 4.ntp.ubuntu.com ntp-bootstrap.ubuntu.com 
+TIME-03	2.3	L1	TIME	PASS	chronyd runs as the _chrony user	_chrony 
+CRON-01	2.4	L1	CRON	PASS	cron daemon is enabled and active	
+CRON-02	2.4	L1	CRON	PASS	Permissions on /etc/crontab are 600 root:root or stricter	mode=600 owner=root group=root
+CRON-03	2.4	L1	CRON	PASS	Permissions on /etc/cron.hourly are 700 root:root or stricter	mode=700 owner=root group=root
+CRON-04	2.4	L1	CRON	PASS	Permissions on /etc/cron.daily are 700 root:root or stricter	mode=700 owner=root group=root
+CRON-05	2.4	L1	CRON	PASS	Permissions on /etc/cron.weekly are 700 root:root or stricter	mode=700 owner=root group=root
+CRON-06	2.4	L1	CRON	PASS	Permissions on /etc/cron.monthly are 700 root:root or stricter	mode=700 owner=root group=root
+CRON-07	2.4	L1	CRON	PASS	Permissions on /etc/cron.d are 700 root:root or stricter	mode=700 owner=root group=root
+CRON-08	2.4	L1	CRON	PASS	crontab is restricted to authorized users (cron.allow)	mode=640 owner=root group=root
+CRON-09	2.4	L1	CRON	NA	at is restricted to authorized users (at.allow)	at not installed
+NET-01	3.1	L1	NET-DEV	PASS	Wireless interfaces are disabled	no wireless NICs
+NET-02	3.1	L1	NET-DEV	PASS	Bluetooth services are not in use	package bluez not installed
+NET-03	3.1	L1	NET-DEV	MANUAL	IPv6 status is identified and intentional	disable_ipv6(all)=0; global v6 addrs: 1
+NET-04	3.2	L2	NET-MOD	PASS	Kernel module 'dccp' is disabled	module not present in kernel 7.0.0-34-generic
+NET-05	3.2	L2	NET-MOD	PASS	Kernel module 'tipc' is disabled	install->false, blacklisted, not loaded
+NET-06	3.2	L2	NET-MOD	PASS	Kernel module 'rds' is disabled	install->false, blacklisted, not loaded
+NET-07	3.2	L2	NET-MOD	PASS	Kernel module 'sctp' is disabled	install->false, blacklisted, not loaded
+NET-10	3.3	L1	NET-SYSCTL	NA	IP forwarding is disabled	net.ipv4.ip_forward=1: required by Docker bridge networking - documented exception; forwarding is confined by the FORWARD chain policy
+NET-11	3.3	L1	NET-SYSCTL	PASS	IPv6 forwarding is disabled	running=0 persisted=0
+NET-12	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.all.send_redirects = 0	running=0 persisted=0
+NET-13	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.default.send_redirects = 0	running=0 persisted=0
+NET-14	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.icmp_ignore_bogus_error_responses = 1	running=1 persisted=1
+NET-15	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.icmp_echo_ignore_broadcasts = 1	running=1 persisted=1
+NET-16	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.all.accept_redirects = 0	running=0 persisted=0
+NET-17	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.default.accept_redirects = 0	running=0 persisted=0
+NET-18	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv6.conf.all.accept_redirects = 0	running=0 persisted=0
+NET-19	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv6.conf.default.accept_redirects = 0	running=0 persisted=0
+NET-20	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.all.secure_redirects = 0	running=0 persisted=0
+NET-21	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.default.secure_redirects = 0	running=0 persisted=0
+NET-22	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.all.rp_filter = 1	running=1 persisted=1
+NET-23	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.default.rp_filter = 1	running=1 persisted=1
+NET-24	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.all.accept_source_route = 0	running=0 persisted=0
+NET-25	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.default.accept_source_route = 0	running=0 persisted=0
+NET-26	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv6.conf.all.accept_source_route = 0	running=0 persisted=0
+NET-27	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv6.conf.default.accept_source_route = 0	running=0 persisted=0
+NET-28	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.all.log_martians = 1	running=1 persisted=1
+NET-29	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.conf.default.log_martians = 1	running=1 persisted=1
+NET-30	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv4.tcp_syncookies = 1	running=1 persisted=1
+NET-31	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv6.conf.all.accept_ra = 0	running=0 persisted=0
+NET-32	3.3	L1	NET-SYSCTL	PASS	sysctl net.ipv6.conf.default.accept_ra = 0	running=0 persisted=0
+FW-01	4	L1	FW	PASS	A single host firewall is in use	ufw 
+FW-02	4	L1	FW	PASS	Default inbound policy is deny	 deny (incoming), allow (outgoing), deny (routed)
+FW-03	4	L1	FW	PASS	Default routed/forward policy is deny	 deny (incoming), allow (outgoing), deny (routed)
+FW-04	4	L1	FW	MANUAL	Firewall rules exist only for approved open ports	22/tcp<-administration 
+FW-05	4	L1	FW	PASS	Loopback traffic is configured	ufw-before-input accepts lo
+FW-06	4	X	FW	MANUAL	Docker published ports are filtered (DOCKER-USER chain)	Docker DNAT bypasses INPUT/ufw; DOCKER-USER has 0 custom rule(s); published ports: 
+SSH-01	5.1	L1	SSH	PASS	Permissions on /etc/ssh/sshd_config are 600 root:root or stricter	mode=600 owner=root group=root
+SSH-02	5.1	L1	SSH	PASS	SSH private host keys are 0600 root	
+SSH-03	5.1	L1	SSH	PASS	SSH public host keys are 0644 root or stricter	
+SSH-04	5.1	L1	SSH	PASS	SSH access is limited to named users/groups	allowusers=admin allowgroups= denyusers= denygroups=
+SSH-05	5.1	L1	SSH	PASS	SSH warning banner is configured	banner /etc/issue.net
+SSH-06	5.1	L1	SSH	PASS	Only strong SSH ciphers are used	chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+SSH-07	5.1	L1	SSH	PASS	SSH idle timeout (ClientAlive*) is configured	interval=300 countmax=3
+SSH-08	5.1	L1	SSH	PASS	SSH forwarding (TCP, X11, agent) is disabled	disableforwarding=no tcp=no x11=no agent=no
+SSH-09	5.1	L1	SSH	PASS	SSH GSSAPIAuthentication is disabled	gssapiauthentication no
+SSH-10	5.1	L1	SSH	PASS	SSH HostbasedAuthentication is disabled	hostbasedauthentication no
+SSH-11	5.1	L1	SSH	PASS	SSH IgnoreRhosts is enabled	ignorerhosts yes
+SSH-12	5.1	L1	SSH	PASS	Only strong SSH key exchange algorithms are used	sntrup761x25519-sha512@openssh.com,curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
+SSH-13	5.1	L1	SSH	PASS	SSH LoginGraceTime is 60 seconds or less	logingracetime 30
+SSH-14	5.1	L1	SSH	PASS	SSH LogLevel is INFO or VERBOSE	loglevel VERBOSE
+SSH-15	5.1	L1	SSH	PASS	Only strong SSH MACs are used	hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+SSH-16	5.1	L1	SSH	PASS	SSH MaxAuthTries is 4 or less	maxauthtries 4
+SSH-17	5.1	L1	SSH	PASS	SSH MaxSessions is 10 or less	maxsessions 10
+SSH-18	5.1	L1	SSH	PASS	SSH MaxStartups is 10:30:60 or stricter	10:30:60
+SSH-19	5.1	L1	SSH	PASS	SSH PermitEmptyPasswords is disabled	permitemptypasswords no
+SSH-20	5.1	L1	SSH	PASS	SSH root login is disabled	permitrootlogin no
+SSH-21	5.1	L1	SSH	PASS	SSH PermitUserEnvironment is disabled	permituserenvironment no
+SSH-22	5.1	L1	SSH	PASS	SSH UsePAM is enabled	usepam yes
+SSH-23	5.1	X	SSH	PASS	SSH password authentication is disabled (keys only)	passwordauthentication no
+SSH-24	5.1	X	SSH	MANUAL	authorized_keys entries are known and approved	1 key(s) across all users
+SUDO-01	5.2	L1	SUDO	PASS	sudo is installed	
+SUDO-02	5.2	L1	SUDO	PASS	sudo commands use a pty	
+SUDO-03	5.2	L1	SUDO	NA	sudo has a dedicated log file	active sudo is sudo-rs, which rejects 'Defaults logfile' as a syntax error; sudo events are in journal/auth.log and the audit trail (user_emulation)
+SUDO-04	5.2	L2	SUDO	PASS	sudo requires a password (no NOPASSWD)	
+SUDO-05	5.2	L1	SUDO	PASS	sudo re-authentication is not disabled globally	
+SUDO-06	5.2	L1	SUDO	PASS	sudo authentication timeout is 15 minutes or less	timestamp_timeout=15
+SUDO-07	5.2	L1	SUDO	PASS	Access to su is restricted (pam_wheel)	group=sugroup members=
+SUDO-08	5.2	X	SUDO	MANUAL	Membership of privileged groups is reviewed	sudo=[admin] docker=[admin] lxd=[admin] adm=[syslog,admin] (docker/lxd membership is root-equivalent)
+PAM-01	5.3	L1	PAM	PASS	libpam-pwquality is installed	
+PAM-02	5.3	L1	PAM	PASS	pam_faillock is enabled (auth + account)	
+PAM-03	5.3	L1	PAM	PASS	pam_pwquality is enabled	
+PAM-04	5.3	L1	PAM	PASS	pam_pwhistory is enabled	
+PAM-05	5.3	L1	PAM	PASS	Account lockout threshold is 5 failures or fewer	deny=5
+PAM-06	5.3	L1	PAM	PASS	Account lockout lasts 15 minutes or more	unlock_time=900
+PAM-07	5.3	L2	PAM	PASS	Lockout also applies to root	
+PAM-08	5.3	L1	PAM	PASS	Password must differ by 2+ characters (difok)	difok=2
+PAM-09	5.3	L1	PAM	PASS	Minimum password length is 14 or more	minlen=14
+PAM-10	5.3	L1	PAM	PASS	Password complexity is enforced	minclass=3 d= u= l= o=
+PAM-11	5.3	L1	PAM	PASS	Same consecutive characters are limited (maxrepeat)	maxrepeat=3
+PAM-12	5.3	L1	PAM	PASS	Sequential characters are limited (maxsequence)	maxsequence=3
+PAM-13	5.3	L1	PAM	PASS	Dictionary check is enabled	dictcheck=1
+PAM-14	5.3	L1	PAM	PASS	Password quality is enforced for root	
+PAM-15	5.3	L1	PAM	PASS	Password history remembers 24 or more	remember=24
+PAM-16	5.3	L1	PAM	PASS	pam_unix does not allow empty passwords (nullok)	
+PAM-17	5.3	L1	PAM	PASS	pam_unix uses a strong password hash	yescrypt
+PAM-18	5.3	L1	PAM	PASS	pam_unix honours the quality-checked password (use_authtok)	
+ACCT-01	5.4	L1	ACCT	PASS	Password expiration is 365 days or less (login.defs)	PASS_MAX_DAYS=365
+ACCT-02	5.4	L1	ACCT	PASS	Existing password accounts expire within 365 days	
+ACCT-03	5.4	L2	ACCT	PASS	Minimum password age is 1 day or more	PASS_MIN_DAYS=1
+ACCT-04	5.4	L1	ACCT	PASS	Password expiry warning is 7 days or more	PASS_WARN_AGE=7
+ACCT-05	5.4	L1	ACCT	PASS	Strong password hashing algorithm is configured	ENCRYPT_METHOD=YESCRYPT
+ACCT-06	5.4	L1	ACCT	PASS	Inactive password lock is 45 days or less	INACTIVE=45
+ACCT-07	5.4	L1	ACCT	PASS	No user has a last password change date in the future	
+ACCT-08	5.4	L1	ACCT	PASS	root is the only UID 0 account	
+ACCT-09	5.4	L1	ACCT	PASS	root is the only GID 0 account	
+ACCT-10	5.4	L1	ACCT	PASS	root account access is controlled (password set or locked)	status=L
+ACCT-11	5.4	L1	ACCT	PASS	root PATH integrity	/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+ACCT-12	5.4	L1	ACCT	PASS	System accounts have no login shell	
+ACCT-13	5.4	L1	ACCT	PASS	Default user umask is 027 or stricter	profile=027 login.defs=027
+ACCT-14	5.4	L1	ACCT	PASS	Shell idle timeout (TMOUT) is 900s or less	TMOUT=900
+ACCT-15	5.4	L2	ACCT	PASS	nologin is not listed in /etc/shells	
+ACCT-16	5.4	X	ACCT	FAIL	No account uses a trivially guessable password	accounts: admin (password value not recorded)
+LOG-01	6.1	L1	LOG	PASS	journald is active	
+LOG-02	6.1	L1	LOG	PASS	journald compresses large log files	
+LOG-03	6.1	L1	LOG	PASS	journald writes logs to persistent disk	
+LOG-04	6.1	L1	LOG	PASS	rsyslog is installed and enabled	
+LOG-05	6.1	L1	LOG	PASS	rsyslog creates log files 0640 or stricter	$FileCreateMode 0640
+LOG-06	6.1	L1	LOG	FAIL	Logs are forwarded to a remote log host	no forwarding action configured (logs only exist on this host)
+LOG-07	6.1	L1	LOG	PASS	Log files are not readable by other users	
+AUD-01	6.2	L2	AUDIT	PASS	auditd is installed	
+AUD-02	6.2	L2	AUDIT	PASS	auditd is enabled and active	
+AUD-03	6.2	L2	AUDIT	PASS	Auditing starts before auditd (audit=1 on kernel cmdline)	
+AUD-04	6.2	L2	AUDIT	PASS	audit_backlog_limit is 8192 or more	8192
+AUD-05	6.2	L2	AUDIT	FAIL	Audit logs are not automatically deleted	max_log_file_action=rotate
+AUD-06	6.2	L2	AUDIT	FAIL	System warns/halts when audit logs are full	space_left_action=syslog admin_space_left_action=suspend
+AUD-10	6.2	L2	AUDIT	PASS	Audit rule: changes to sudoers (scope)	
+AUD-11	6.2	L2	AUDIT	PASS	Audit rule: actions as another user (execve with euid change)	
+AUD-12	6.2	L2	AUDIT	NA	Audit rule: sudo log file	sudo-rs has no log file to watch
+AUD-13	6.2	L2	AUDIT	PASS	Audit rule: date and time changes	
+AUD-14	6.2	L2	AUDIT	PASS	Audit rule: network environment changes	
+AUD-15	6.2	L2	AUDIT	PASS	Audit rule: privileged command use	
+AUD-16	6.2	L2	AUDIT	PASS	Audit rule: unsuccessful file access attempts	
+AUD-17	6.2	L2	AUDIT	PASS	Audit rule: user/group identity changes	
+AUD-18	6.2	L2	AUDIT	PASS	Audit rule: discretionary access control changes	
+AUD-19	6.2	L2	AUDIT	PASS	Audit rule: successful mounts	
+AUD-20	6.2	L2	AUDIT	PASS	Audit rule: session initiation	
+AUD-21	6.2	L2	AUDIT	PASS	Audit rule: login and logout events	
+AUD-22	6.2	L2	AUDIT	PASS	Audit rule: file deletion by users	
+AUD-23	6.2	L2	AUDIT	PASS	Audit rule: mandatory access control changes	
+AUD-24	6.2	L2	AUDIT	PASS	Audit rule: kernel module loading and unloading	
+AUD-30	6.2	L2	AUDIT	PASS	Audit configuration is immutable (-e 2)	
+AUD-31	6.2	L2	AUDIT	PASS	Audit log files and directory are access-restricted	dir=700
+AIDE-01	6.3	L1	AIDE	PASS	AIDE is installed	
+AIDE-02	6.3	L1	AIDE	PASS	AIDE database is initialised	2026-10-01 06:01:12
+AIDE-03	6.3	L1	AIDE	PASS	Filesystem integrity is checked on a schedule	
+PERM-01	7.1	L1	PERM	PASS	Permissions on /etc/passwd are 644 root:root or stricter	mode=644 owner=root group=root
+PERM-02	7.1	L1	PERM	PASS	Permissions on /etc/passwd- are 644 root:root or stricter	mode=644 owner=root group=root
+PERM-03	7.1	L1	PERM	PASS	Permissions on /etc/group are 644 root:root or stricter	mode=644 owner=root group=root
+PERM-04	7.1	L1	PERM	PASS	Permissions on /etc/group- are 644 root:root or stricter	mode=644 owner=root group=root
+PERM-05	7.1	L1	PERM	PASS	Permissions on /etc/shadow are 640 root:root|shadow or stricter	mode=640 owner=root group=shadow
+PERM-06	7.1	L1	PERM	PASS	Permissions on /etc/shadow- are 640 root:root|shadow or stricter	mode=640 owner=root group=shadow
+PERM-07	7.1	L1	PERM	PASS	Permissions on /etc/gshadow are 640 root:root|shadow or stricter	mode=640 owner=root group=shadow
+PERM-08	7.1	L1	PERM	PASS	Permissions on /etc/gshadow- are 640 root:root|shadow or stricter	mode=640 owner=root group=shadow
+PERM-09	7.1	L1	PERM	PASS	Permissions on /etc/shells are 644 root:root or stricter	mode=644 owner=root group=root
+PERM-10	7.1	L1	PERM	PASS	Permissions on /etc/security/opasswd are 600 root:root or stricter	mode=600 owner=root group=root
+PERM-11	7.1	L1	PERM	PASS	No world-writable files; world-writable dirs have the sticky bit	
+PERM-12	7.1	L1	PERM	PASS	No files without a valid owner or group	
+PERM-13	7.1	L1	PERM	MANUAL	SUID/SGID binaries are reviewed	21 files: /opt/VBoxGuestAdditions-7.2.6/bin/VBoxDRMClient /usr/bin/chage /usr/bin/chfn /usr/bin/chsh /usr/bin/crontab /usr/bin/expiry /usr/bin/fusermount3 /usr/bin/gpasswd /usr/bin/mount /usr/bin/newgrp /usr/bin/ntfs-3g /usr/bin/passwd /usr/bin/ssh-agent /usr/bin/su /usr/bin/sudo.ws /usr/bin/umount /usr/lib/cargo/bin/su /usr/lib
+USR-01	7.2	L1	USERS	PASS	All accounts use shadowed passwords	
+USR-02	7.2	L1	USERS	PASS	No account has an empty password field	
+USR-03	7.2	L1	USERS	PASS	All groups in /etc/passwd exist in /etc/group	
+USR-04	7.2	L1	USERS	PASS	shadow group is empty	
+USR-05	7.2	L1	USERS	PASS	No duplicate UIDs	
+USR-06	7.2	L1	USERS	PASS	No duplicate GIDs	
+USR-07	7.2	L1	USERS	PASS	No duplicate user names	
+USR-08	7.2	L1	USERS	PASS	No duplicate group names	
+USR-09	7.2	L1	USERS	PASS	Interactive users' home directories exist, are owned, and are 0750 or stricter	
+USR-10	7.2	L1	USERS	PASS	No risky dot files (.netrc/.rhosts/.forward, group/world-writable)	
+ENV-01	-	X	ENV	FAIL	No hypervisor shared folders are mounted	/media/sf_share rw,nodev,relatime; (guest root can read/write host files)
+ENV-02	-	X	ENV	MANUAL	cloud-init is absent or deliberately retained	cloud-init installed; on a non-cloud VM it can re-apply ssh/user config from a datasource

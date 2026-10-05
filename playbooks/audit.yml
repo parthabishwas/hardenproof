@@ -1,0 +1,102 @@
+---
+# Read-only audit. Run before hardening (baseline) and after every change.
+#
+#   ansible-playbook playbooks/audit.yml -e label=baseline      # -> reports/<host>/baseline/
+#
+# Footprint on the target: /opt/lynis-<version> (root-owned, pinned release),
+# /var/lib/hardening-audit/ (the audit script) and Lynis' own log/report under /var/log.
+# Nothing else is modified.
+- name: Detect how to escalate privileges
+  hosts: all
+  become: false
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Detect the sudo implementation
+      ansible.builtin.import_tasks: tasks/detect-become.yml
+
+- name: Security audit (CIS-mapped checks + Lynis)
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    label: adhoc
+    audit_out: "{{ playbook_dir }}/../reports/{{ inventory_hostname }}/{{ label }}"
+    lynis_version: 3.1.7
+    lynis_sha256: 48d829d0dc2c583a3e838cc09a7190b69a3af844bcb913c7cf9c0226b04b95c5
+    lynis_tarball: "{{ playbook_dir }}/../vendor/lynis-{{ lynis_version }}.tar.gz"
+    lynis_dir: "/opt/lynis-{{ lynis_version }}"
+  tasks:
+    - name: Create local output directory
+      ansible.builtin.file:
+        path: "{{ audit_out }}"
+        state: directory
+        mode: "0750"
+      delegate_to: localhost
+      become: false
+
+    - name: Fetch the pinned Lynis release to the controller (checksum verified)
+      ansible.builtin.get_url:
+        url: "https://github.com/CISOfy/lynis/archive/refs/tags/{{ lynis_version }}.tar.gz"
+        dest: "{{ lynis_tarball }}"
+        checksum: "sha256:{{ lynis_sha256 }}"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Create audit working directory
+      ansible.builtin.file:
+        path: /var/lib/hardening-audit
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Install the CIS-mapped audit script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../audit/cis_audit.sh"
+        dest: /var/lib/hardening-audit/cis_audit.sh
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Run the CIS-mapped audit
+      ansible.builtin.command: /var/lib/hardening-audit/cis_audit.sh
+      register: cis_audit
+      changed_when: false
+
+    - name: Save CIS audit result
+      ansible.builtin.copy:
+        content: "{{ cis_audit.stdout }}\n"
+        dest: "{{ audit_out }}/cis_audit.tsv"
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+
+    - name: Install Lynis (root-owned, pinned version)
+      ansible.builtin.unarchive:
+        src: "{{ lynis_tarball }}"
+        dest: /opt
+        owner: root
+        group: root
+        creates: "{{ lynis_dir }}/lynis"
+
+    - name: Run Lynis
+      ansible.builtin.command:
+        cmd: >-
+          ./lynis audit system --quiet --no-colors
+          --logfile /var/log/lynis.log --report-file /var/log/lynis-report.dat
+        chdir: "{{ lynis_dir }}"
+      register: lynis_run
+      changed_when: false
+      failed_when: lynis_run.rc not in [0, 78]   # 78 = warnings found
+
+    - name: Collect Lynis report and log
+      ansible.builtin.fetch:
+        src: "{{ item }}"
+        dest: "{{ audit_out }}/"
+        flat: true
+      loop:
+        - /var/log/lynis-report.dat
+        - /var/log/lynis.log

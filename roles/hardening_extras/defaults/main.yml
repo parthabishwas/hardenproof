@@ -1,0 +1,144 @@
+---
+# hardening_extras - closes the gaps between dev-sec's baseline and the CIS Ubuntu benchmark.
+# Every switch below is a decision with an operational cost. Defaults are the values that are
+# safe on a generic server; anything that depends on the host's role is OFF or empty and has
+# to be turned on per environment in inventory/<env>/group_vars/.
+
+# --- packages / patching ------------------------------------------------------
+# Installing updates restarts services (including Docker and its containers) and may need a
+# reboot, so on a live server it is a change-window decision, not a side effect of hardening.
+# true runs "apt-get upgrade --with-new-pkgs" (never removes a package). When false, pending
+# updates stay visible in the audit as an open finding.
+hardening_apply_updates: false
+hardening_remove_packages:               # cleartext-protocol clients (CIS 2.2)
+  - telnet
+  - inetutils-telnet
+  - ftp
+  - tnftp
+  - rsh-client
+  - talk
+  - nis
+
+# --- kernel modules (CIS 1.1.1, 3.2) --------------------------------------------
+# A module that backs a mounted filesystem is skipped automatically.
+# usb-storage: remove from the list on hosts that are (re)installed or rescued from USB /
+# BMC virtual media.
+# overlay is skipped automatically where Docker, containerd or Podman is installed.
+hardening_disabled_kernel_modules:
+  - overlay
+  - cramfs
+  - freevxfs
+  - hfs
+  - hfsplus
+  - jffs2
+  - udf
+  - usb-storage
+  - dccp
+  - tipc
+  - rds
+  - sctp
+
+# --- /tmp (CIS 1.1.2) -----------------------------------------------------------
+hardening_tmp_noexec: true
+# Releases before 26.04 keep /tmp on the root filesystem. true enables systemd's tmp.mount
+# (a tmpfs, with the options above) from the NEXT BOOT: files in /tmp do not survive a reboot
+# and /tmp then uses RAM/swap. Leave false where software keeps large or long-lived files there.
+hardening_tmp_tmpfs: false
+
+# --- process hardening (CIS 1.5) --------------------------------------------------
+hardening_disable_apport: true
+# kdump writes full-RAM images (keys, credentials) to disk and needs kexec, which the
+# dev-sec sysctl baseline disables. Keep kdump only where kernel crash analysis is a real
+# requirement, and then set this to false AND kernel.kexec_load_disabled: 0.
+hardening_disable_kdump: true
+
+# --- banners (CIS 1.6) ----------------------------------------------------------
+hardening_banner_text: |
+  Authorized users only. All activity on this system is logged and monitored.
+  Unauthorized access is prohibited and will be prosecuted.
+
+# --- cron / at (CIS 2.4) -----------------------------------------------------------
+hardening_cron_allow_users: [root]
+
+# --- units to stop, disable and mask ------------------------------------------------
+# Empty by default: whether a unit is "unneeded" depends on the host (multipathd on a
+# SAN-booted server is not optional). Units that do not exist are skipped.
+hardening_disable_units: []
+
+# --- sudo / su (CIS 5.2) -----------------------------------------------------------
+hardening_sudo_timestamp_timeout: 15
+hardening_sudo_logfile: /var/log/sudo.log   # ignored when sudo-rs is the active sudo (unsupported there)
+hardening_su_group: sugroup                 # only members may use su; keep it empty
+hardening_su_group_members: []
+
+# --- password policy (CIS 5.3) -------------------------------------------------------
+hardening_pwquality:
+  minlen: 14
+  minclass: 3
+  difok: 2
+  maxrepeat: 3
+  maxsequence: 3
+  dictcheck: 1
+  usercheck: 1
+  enforcing: 1
+hardening_pwquality_enforce_for_root: true
+hardening_pwhistory_remember: 24
+hardening_pam_remove_nullok: true
+
+# --- accounts (CIS 5.4) ---------------------------------------------------------------
+hardening_pass_max_days: "{{ os_auth_pw_max_age | default(365) }}"
+hardening_pass_min_days: 1
+hardening_pass_warn_age: 7
+hardening_inactive_days: 45
+hardening_umask: "027"
+
+# --- logging (CIS 6.1) ---------------------------------------------------------------
+hardening_journald_max_use: 1G
+hardening_syslog_remote_host: ""            # e.g. siem.example.internal - empty leaves LOG-06 open
+hardening_syslog_remote_port: "{{ 6514 if hardening_syslog_remote_tls | bool else 514 }}"
+hardening_syslog_remote_protocol: tcp
+# TLS for forwarded logs (rsyslog gtls driver). Without it, logs cross the network in clear
+# text. The collector's certificate must chain to the CA file and carry the permitted name.
+hardening_syslog_remote_tls: false
+hardening_syslog_remote_ca_file: /etc/ssl/certs/ca-certificates.crt
+hardening_syslog_remote_peer_name: "{{ hardening_syslog_remote_host }}"
+hardening_fix_log_permissions: true
+
+# --- mail transfer agent (CIS 2.1) -----------------------------------------------------
+# On some releases the AIDE packages depend on a mailer, which installs postfix listening on
+# every interface. A postfix that THIS playbook caused to be installed is always restricted
+# to loopback. true also restricts a postfix that was already there - do not set it on a
+# host that is meant to receive mail.
+hardening_mta_loopback_only: false
+
+# --- auditd (CIS 6.2, Level 2) ----------------------------------------------------------
+hardening_audit_rules: true
+hardening_audit_backlog_limit: 8192
+# -e 2 makes the rule set immutable until reboot. Any later rule change then needs a reboot.
+hardening_audit_immutable: true
+
+# --- AIDE (CIS 6.3) -----------------------------------------------------------------------
+hardening_aide: true
+# When to rebuild the integrity baseline at the end of a run (it takes minutes):
+#   auto   - only if there is no database yet or files under /etc, /usr, /boot or /opt were
+#            modified since the run started
+#   always - every run        never - leave the database alone
+hardening_aide_reinit: auto
+hardening_aide_excludes:
+  - /var/lib/docker
+  - /var/lib/containerd
+  - /media
+  - /mnt
+  - /var/lib/hardening-audit
+
+# --- host firewall (CIS 4) -------------------------------------------------------------------
+hardening_firewall: true
+hardening_fw_allow:                        # inbound allow list; everything else is dropped
+  - { port: "22", proto: tcp, from: any, comment: "SSH administration" }
+hardening_fw_logging: low
+# Ports PUBLISHED by Docker (-p) are DNATed before the INPUT chain and bypass ufw completely.
+# true installs rules in Docker's DOCKER-USER chain so that, from outside the host, only the
+# published ports listed here are reachable. Off by default: on a host that already serves
+# traffic from containers, turning it on with an incomplete list is an outage.
+hardening_docker_filter: false
+hardening_docker_published_allow: []      # e.g. [{port: 443, proto: tcp}, {port: 8080, proto: tcp, from: 10.0.0.0/8}]

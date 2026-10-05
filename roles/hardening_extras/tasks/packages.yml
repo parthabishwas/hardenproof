@@ -1,0 +1,43 @@
+---
+- name: Refresh package index
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+# Must exist before /tmp becomes noexec: dpkg-preconfigure extracts and *executes* package
+# config scripts from this directory (default: /tmp).
+- name: Create an executable scratch directory for apt
+  ansible.builtin.file:
+    path: /var/cache/apt/extracttemplates
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Point apt-extracttemplates away from /tmp
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/90hardening-tmp-noexec
+    content: |
+      // /tmp is mounted noexec; package config scripts must be extracted elsewhere.
+      APT::ExtractTemplates::TempDir "/var/cache/apt/extracttemplates";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Remove cleartext-protocol clients
+  ansible.builtin.apt:
+    name: "{{ hardening_remove_packages }}"
+    state: absent
+    purge: true
+
+- name: Install security tooling
+  ansible.builtin.apt:
+    name:
+      - apparmor-utils
+      - libpam-pwquality
+    state: present
+
+- name: Apply pending package updates
+  ansible.builtin.apt:
+    upgrade: safe
+  when: hardening_apply_updates | bool

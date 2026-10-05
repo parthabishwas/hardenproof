@@ -1,0 +1,55 @@
+---
+# Validated with the system's own visudo, i.e. the *active* sudo implementation.
+# sudo-rs rejects settings it does not know (e.g. "logfile") as a syntax error, so a
+# benchmark line copied verbatim from the CIS PDF would make the file invalid there.
+- name: Sudo defaults
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-hardening
+    content: |
+      # Managed by Ansible (hardening_extras)
+      Defaults use_pty
+      Defaults timestamp_timeout={{ hardening_sudo_timestamp_timeout }}
+      Defaults passwd_tries=3
+      {% if not hardening_sudo_rs %}
+      Defaults logfile="{{ hardening_sudo_logfile }}"
+      {% endif %}
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+
+- name: Rotate the sudo log
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/sudo-hardening
+    content: |
+      {{ hardening_sudo_logfile }} {
+          monthly
+          rotate 12
+          compress
+          missingok
+          notifempty
+          create 0600 root root
+      }
+    owner: root
+    group: root
+    mode: "0644"
+  when: not hardening_sudo_rs
+
+- name: Create the group that is allowed to use su
+  ansible.builtin.group:
+    name: "{{ hardening_su_group }}"
+    system: true
+
+- name: Set su group membership
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: "{{ hardening_su_group }}"
+    append: true
+  loop: "{{ hardening_su_group_members }}"
+
+- name: Restrict su to that group (root is unaffected via pam_rootok)
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^\s*auth\s+required\s+pam_wheel\.so'
+    line: "auth       required   pam_wheel.so use_uid group={{ hardening_su_group }}"
+    insertafter: '^auth\s+sufficient\s+pam_rootok\.so'

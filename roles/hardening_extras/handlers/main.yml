@@ -1,0 +1,40 @@
+---
+- name: Rebuild PAM stack
+  ansible.builtin.command: pam-auth-update --package
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  changed_when: true
+
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+
+- name: Restart rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog
+    state: restarted
+
+- name: Update grub
+  ansible.builtin.shell: update-grub && chmod 600 /boot/grub/grub.cfg
+  changed_when: true
+  notify: Flag reboot
+
+- name: Flag reboot
+  ansible.builtin.file:
+    path: /var/run/reboot-required
+    state: touch
+    mode: "0644"
+
+- name: Load audit rules
+  ansible.builtin.shell: |
+    set -o pipefail
+    if auditctl -s | grep -q '^enabled 2'; then
+      echo "audit config is immutable; new rules load at next boot"; touch /var/run/reboot-required
+    else
+      augenrules --load
+    fi
+  args:
+    executable: /bin/bash
+  register: hardening_augenrules
+  changed_when: true

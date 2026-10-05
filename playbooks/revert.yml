@@ -1,0 +1,212 @@
+---
+# Undo the hardening of individual control families.
+#
+#   ./harden.sh revert -i <inventory> firewall sudo
+#   ansible-playbook playbooks/revert.yml --tags firewall,sudo
+#
+# Nothing runs unless a family is named. Files are restored from the "pristine" backup - the
+# copy of /etc taken before the first hardening run on that host
+# (/var/backups/hardening/pristine). Settings HardenProof added as separate files are removed.
+#
+# Not reverted, because there is no safe automatic answer:
+#   * installed packages (auditd, aide, ufw, libpam-pwquality) and removed ones (telnet, ftp)
+#   * password ageing already set on existing accounts (chage -M 99999 <user> to undo)
+#   * permissions tightened on existing log files and home directories
+# A later ./harden.sh apply re-applies everything that is still enabled in the inventory, so
+# also switch the control off there (see "Leaving a control out" in the README).
+
+- name: Detect how to escalate privileges
+  hosts: all
+  become: false
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Detect the sudo implementation
+      ansible.builtin.import_tasks: tasks/detect-become.yml
+
+- name: Revert selected control families
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    pristine: /var/backups/hardening/pristine
+  tasks:
+    - name: The pristine backup must exist
+      ansible.builtin.stat:
+        path: "{{ pristine }}/etc.tar.gz"
+      register: revert_pristine
+      tags: [always]
+
+    - name: Stop when there is nothing to restore from
+      ansible.builtin.assert:
+        that: revert_pristine.stat.exists
+        fail_msg: "No {{ pristine }}/etc.tar.gz on this host. Was it hardened with HardenProof?"
+      tags: [always]
+
+    # ------------------------------------------------------------------ firewall
+    - name: Firewall - disable ufw and remove the Docker published-port filter
+      ansible.builtin.shell: |
+        command -v ufw >/dev/null 2>&1 && ufw --force disable
+        if [ -f /etc/systemd/system/hardening-docker-user.service ]; then
+          systemctl disable --now hardening-docker-user.service
+          rm -f /etc/systemd/system/hardening-docker-user.service /usr/local/sbin/hardening-docker-user
+          systemctl daemon-reload
+          for ipt in iptables ip6tables; do $ipt -F DOCKER-USER 2>/dev/null || true; done
+        fi
+      changed_when: true
+      tags: [never, firewall]
+
+    # ----------------------------------------------------------------------- ssh
+    - name: SSH - restore the original server and client configuration
+      ansible.builtin.shell: |
+        set -e
+        tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/ssh/sshd_config etc/ssh/ssh_config
+        rm -f /etc/ssh/revoked_keys
+        sshd -t
+        systemctl unmask ssh.socket 2>/dev/null || true
+        systemctl restart ssh.service
+      changed_when: true
+      tags: [never, ssh]
+
+    # ----------------------------------------------------------------------- pam
+    - name: PAM - remove password quality, history and lockout
+      ansible.builtin.shell: |
+        set -e
+        rm -f /usr/share/pam-configs/pwhistory /usr/share/pam-configs/faillock /usr/share/pam-configs/faillock_authfail \
+              /etc/security/pwquality.conf.d/50-hardening.conf
+        tar -xzpf {{ pristine }}/access-critical.tar.gz -C / usr/share/pam-configs/unix
+        tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/pam.d/common-auth etc/pam.d/common-account \
+            etc/pam.d/common-password etc/pam.d/common-session etc/security/faillock.conf
+      changed_when: true
+      tags: [never, pam]
+
+    # ---------------------------------------------------------------------- sudo
+    - name: Sudo - remove the hardening defaults
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/sudoers.d/90-hardening
+        - /etc/logrotate.d/sudo-hardening
+      tags: [never, sudo]
+
+    - name: Sudo - lift the su restriction
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/su
+        regexp: '^\s*auth\s+required\s+pam_wheel\.so'
+        state: absent
+      tags: [never, sudo]
+
+    # ------------------------------------------------------------------ accounts
+    - name: Accounts - restore login.defs and remove shell environment limits
+      ansible.builtin.shell: |
+        set -e
+        tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/login.defs
+        rm -f /etc/profile.d/tmout.sh /etc/profile.d/50-hardening-umask.sh /etc/profile.d/pinerolo_profile.sh \
+              /etc/security/limits.d/10.hardcore.conf /etc/systemd/coredump.conf.d/custom.conf
+        useradd -D -f -1
+      changed_when: true
+      tags: [never, accounts]
+
+    # -------------------------------------------------------------------- sysctl
+    - name: Kernel and network parameters - remove the hardened values
+      ansible.builtin.shell: |
+        rm -f /etc/sysctl.d/90-dev-sec.conf
+        sysctl --system >/dev/null
+        touch /var/run/reboot-required
+      changed_when: true
+      tags: [never, sysctl]
+
+    # ------------------------------------------------------------------- modules
+    - name: Kernel modules - allow the disabled modules again
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/modprobe.d/60-hardening.conf
+        - /etc/modprobe.d/dev-sec.conf
+      tags: [never, modules]
+
+    # -------------------------------------------------------------------- mounts
+    - name: Mounts - remove the hardened mount options
+      ansible.builtin.shell: |
+        rm -rf /etc/systemd/system/tmp.mount.d/50-hardening.conf /etc/apt/apt.conf.d/90hardening-tmp-noexec
+        if grep -qs 'Managed by Ansible (hardening_extras)' /etc/systemd/system/tmp.mount; then
+          systemctl disable tmp.mount; rm -f /etc/systemd/system/tmp.mount
+        fi
+        sed -i -E '/^proc \/proc proc .*hidepid=/d; /^devtmpfs \/dev devtmpfs rw,nosuid,noexec/d; /^tmpfs \/dev\/shm tmpfs rw,nosuid,nodev,noexec/d; /^tmpfs \/run tmpfs rw,nosuid,nodev /d' /etc/fstab
+        systemctl daemon-reload
+        mount -o remount,exec /tmp 2>/dev/null || true
+        mount -o remount,exec /dev/shm 2>/dev/null || true
+        touch /var/run/reboot-required
+      changed_when: true
+      tags: [never, mounts]
+
+    # ------------------------------------------------------------------ services
+    - name: Services - unmask the units that were switched off
+      ansible.builtin.shell: |
+        for u in apport.service apport-autoreport.path apport-autoreport.timer apport-forward.socket kdump-tools.service \
+                 {{ hardening_disable_units | default([]) | join(' ') }}; do
+          systemctl list-unit-files "$u" >/dev/null 2>&1 || continue
+          systemctl unmask "$u" 2>/dev/null || true
+          # bring back only what was enabled before the first hardening run
+          if awk -v u="$u" '$1==u && $2=="enabled"{f=1} END{exit !f}' {{ pristine }}/unit-files.before; then
+            systemctl enable --now "$u" 2>/dev/null || true
+          fi
+        done
+        [ -f /etc/default/apport ] && tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/default/apport 2>/dev/null || true
+      changed_when: true
+      tags: [never, services]
+
+    # ---------------------------------------------------------------------- cron
+    - name: Cron - restore default permissions and remove the allow-lists
+      ansible.builtin.shell: |
+        rm -f /etc/cron.allow /etc/at.allow
+        chmod 644 /etc/crontab
+        chmod 755 /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly
+      changed_when: true
+      tags: [never, cron]
+
+    # ------------------------------------------------------------------- banners
+    - name: Banners - restore the original login banners
+      ansible.builtin.command: tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/issue etc/issue.net
+      changed_when: true
+      tags: [never, banners]
+
+    # ------------------------------------------------------------------- logging
+    - name: Logging - remove journald and forwarding settings
+      ansible.builtin.shell: |
+        rm -f /etc/systemd/journald.conf.d/50-hardening.conf /etc/rsyslog.d/60-hardening-remote.conf
+        systemctl restart systemd-journald
+        systemctl restart rsyslog 2>/dev/null || true
+      changed_when: true
+      tags: [never, logging]
+
+    # -------------------------------------------------------------------- auditd
+    - name: Audit - remove the rule set and stop auditing from boot
+      ansible.builtin.shell: |
+        rm -f /etc/audit/rules.d/50-hardening.rules /etc/audit/rules.d/60-hardening-privileged.rules \
+              /etc/audit/rules.d/99-finalize.rules /etc/default/grub.d/50-hardening-audit.cfg
+        update-grub
+        systemctl disable auditd 2>/dev/null || true
+        systemctl unmask systemd-journald-audit.socket 2>/dev/null || true
+        touch /var/run/reboot-required
+      changed_when: true
+      tags: [never, auditd]
+
+    # ---------------------------------------------------------------------- aide
+    - name: AIDE - stop the daily integrity check
+      ansible.builtin.systemd:
+        name: dailyaidecheck.timer
+        enabled: false
+        state: stopped
+      failed_when: false
+      tags: [never, aide]
+
+    - name: What happens next
+      ansible.builtin.debug:
+        msg:
+          - "Reverted on {{ inventory_hostname }}: {{ ansible_run_tags | difference(['all']) | join(', ') | default('nothing - name a family with --tags', true) }}"
+          - "sysctl, mounts and auditd need a reboot to return fully to their defaults."
+          - "Switch the control off in the inventory too, or the next apply puts it back."
+      tags: [always]

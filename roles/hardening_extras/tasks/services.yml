@@ -1,0 +1,49 @@
+---
+# grub.cfg can contain the hashed boot password and reveals kernel parameters.
+# Ubuntu 22.04's grub-mkconfig writes it world-readable; newer releases use 0600.
+- name: Check for a GRUB configuration
+  ansible.builtin.stat:
+    path: /boot/grub/grub.cfg
+  register: hardening_grub_cfg
+
+- name: Restrict the GRUB configuration to root
+  ansible.builtin.file:
+    path: /boot/grub/grub.cfg
+    owner: root
+    group: root
+    mode: "0600"
+  when: hardening_grub_cfg.stat.exists
+
+- name: Collect unit files
+  ansible.builtin.command: systemctl list-unit-files --no-legend --no-pager
+  register: hardening_unit_files
+  changed_when: false
+  check_mode: false
+
+- name: Build the list of units to switch off
+  ansible.builtin.set_fact:
+    hardening_units_off: >-
+      {{ (hardening_disable_units
+          + (['apport.service', 'apport-autoreport.path', 'apport-autoreport.timer', 'apport-forward.socket'] if hardening_disable_apport | bool else [])
+          + (['kdump-tools.service'] if hardening_disable_kdump | bool else []))
+         | select('in', hardening_unit_files.stdout_lines | map('split') | map('first') | list)
+         | list }}
+
+- name: Stop, disable and mask unneeded units
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop: "{{ hardening_units_off }}"
+
+- name: Disable apport crash interception
+  ansible.builtin.lineinfile:
+    path: /etc/default/apport
+    regexp: '^enabled='
+    line: enabled=0
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: hardening_disable_apport | bool

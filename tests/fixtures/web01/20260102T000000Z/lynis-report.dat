@@ -1,0 +1,24 @@
+lynis_version=3.1.7
+suggestion[]=BOOT-5122|Set a password on GRUB boot loader to prevent altering boot configuration (e.g. boot in single user mode without password)|-|-|
+suggestion[]=BOOT-5180|Determine runlevel and services at startup|-|-|
+suggestion[]=BOOT-5264|Consider hardening system services|Run '/usr/bin/systemd-analyze security SERVICE' for each service|-|
+suggestion[]=AUTH-9229|Check PAM configuration, add rounds if applicable and expire passwords to encrypt with new values|-|-|
+suggestion[]=AUTH-9230|Configure password hashing rounds in /etc/login.defs|-|-|
+suggestion[]=FILE-6310|To decrease the impact of a full /home file system, place /home on a separate partition|-|-|
+suggestion[]=FILE-6310|To decrease the impact of a full /var file system, place /var on a separate partition|-|-|
+suggestion[]=NAME-4028|Check DNS configuration for the dns domain name|-|-|
+suggestion[]=PKGS-7370|Install debsums utility for the verification of packages with known good database.|-|-|
+suggestion[]=PKGS-7394|Install package apt-show-versions for patch management purposes|-|-|
+suggestion[]=SSH-7408|Consider hardening SSH configuration|ClientAliveCountMax (set 3 to 2)|-|
+suggestion[]=SSH-7408|Consider hardening SSH configuration|MaxAuthTries (set 4 to 3)|-|
+suggestion[]=SSH-7408|Consider hardening SSH configuration|MaxSessions (set 10 to 2)|-|
+suggestion[]=SSH-7408|Consider hardening SSH configuration|Port (set 22 to )|-|
+suggestion[]=LOGG-2154|Enable logging to an external logging host for archiving purposes and additional protection|-|-|
+suggestion[]=LOGG-2190|Check what deleted files are still in use and why.|-|-|
+suggestion[]=ACCT-9622|Enable process accounting|-|-|
+suggestion[]=FINT-4402|Use SHA256 or SHA512 to create checksums in AIDE|-|-|
+suggestion[]=FILE-7524|Consider restricting file permissions|See screen output or log file|text:Use chmod to change file permissions|
+suggestion[]=KRNL-6000|One or more sysctl values differ from the scan profile and could be tweaked||Change sysctl value or disable test (skip-test=KRNL-6000:<sysctl-key>)|
+suggestion[]=HRDN-7222|Harden compilers like restricting access to root user only|-|-|
+suggestion[]=HRDN-7230|Harden the system by installing at least one malware scanner, to perform periodic file system scans|-|Install a tool like rkhunter, chkrootkit, OSSEC, Wazuh|
+hardening_index=82

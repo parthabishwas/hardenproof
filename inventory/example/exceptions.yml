@@ -1,0 +1,29 @@
+---
+# Accepted-risk register for this environment.
+#
+# A finding listed here is shown in the report under "Accepted risks" instead of "Open
+# findings". The audit itself is not changed: the check still fails and still counts against
+# the score, because accepting a risk does not make the benchmark pass.
+#
+# Every entry needs all four fields. The report refuses to build otherwise.
+#   id           check ID from the report (e.g. BOOT-01). FAIL and MANUAL checks can be accepted.
+#   reason       why the risk is acceptable here, including any compensating control
+#   accepted_by  the person or role who owns the decision
+#   expires      YYYY-MM-DD. After this date the finding returns to the open list
+#   hosts        optional list of inventory host names; omit to cover every host in this inventory
+#
+# Entries for checks that pass again are reported as stale so the register stays short.
+
+exceptions: []
+
+# exceptions:
+#   - id: BOOT-01
+#     reason: VM; console access is restricted to the virtualisation admins (hypervisor RBAC).
+#     accepted_by: Head of Infrastructure
+#     expires: 2027-03-31
+#
+#   - id: SSH-08
+#     reason: Host is the bastion; TCP forwarding is its purpose. Source IPs restricted at the firewall.
+#     accepted_by: Security Lead
+#     expires: 2026-12-31
+#     hosts: [bastion01]

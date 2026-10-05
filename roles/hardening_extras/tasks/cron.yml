@@ -1,0 +1,34 @@
+---
+# Directory/file permissions are handled by dev-sec (os_cron_enabled).
+- name: Allow-list cron users
+  ansible.builtin.copy:
+    dest: /etc/cron.allow
+    content: "{{ hardening_cron_allow_users | join('\n') }}\n"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Remove cron.deny (allow-list takes over)
+  ansible.builtin.file:
+    path: /etc/cron.deny
+    state: absent
+
+- name: Check whether at is installed
+  ansible.builtin.stat:
+    path: /usr/bin/at
+  register: hardening_at_bin
+
+- name: Allow-list at users
+  ansible.builtin.copy:
+    dest: /etc/at.allow
+    content: "root\n"
+    owner: root
+    group: root
+    mode: "0640"
+  when: hardening_at_bin.stat.exists
+
+- name: Remove at.deny
+  ansible.builtin.file:
+    path: /etc/at.deny
+    state: absent
+  when: hardening_at_bin.stat.exists

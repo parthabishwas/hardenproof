@@ -1,0 +1,62 @@
+---
+- name: Detect the active sudo implementation
+  ansible.builtin.command: sudo --version
+  register: hardening_sudo_version
+  changed_when: false
+  check_mode: false
+  tags: always
+
+- name: Record host traits used by later decisions
+  ansible.builtin.set_fact:
+    hardening_sudo_rs: "{{ 'sudo-rs' in hardening_sudo_version.stdout }}"
+  tags: always
+
+- name: Packages and patching
+  ansible.builtin.import_tasks: packages.yml
+  tags: [packages]
+
+- name: Kernel modules
+  ansible.builtin.import_tasks: kernel_modules.yml
+  tags: [modules]
+
+- name: Mount options
+  ansible.builtin.import_tasks: mounts.yml
+  tags: [mounts]
+
+- name: Process hardening and unneeded units
+  ansible.builtin.import_tasks: services.yml
+  tags: [services]
+
+- name: Banners
+  ansible.builtin.import_tasks: banners.yml
+  tags: [banners]
+
+- name: Cron and at
+  ansible.builtin.import_tasks: cron.yml
+  tags: [cron]
+
+- name: Sudo and su
+  ansible.builtin.import_tasks: sudo.yml
+  tags: [sudo]
+
+- name: PAM password policy
+  ansible.builtin.import_tasks: pam.yml
+  tags: [pam]
+
+- name: Accounts and shell environment
+  ansible.builtin.import_tasks: accounts.yml
+  tags: [accounts]
+
+- name: Logging
+  ansible.builtin.import_tasks: logging.yml
+  tags: [logging]
+
+- name: Audit rules
+  ansible.builtin.import_tasks: auditd.yml
+  when: hardening_audit_rules | bool
+  tags: [auditd]
+
+- name: Host firewall
+  ansible.builtin.import_tasks: firewall.yml
+  when: hardening_firewall | bool
+  tags: [firewall]

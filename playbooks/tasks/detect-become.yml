@@ -1,0 +1,37 @@
+---
+# Ubuntu 25.10 and later ship sudo-rs as /usr/bin/sudo. Its password prompt is rendered as
+# "[sudo: <prompt>] Password:", which ansible-core (tested: 2.19 and 2.21) does not
+# recognise, so privilege escalation times out. The classic sudo is still installed as
+# sudo.ws and reads the same /etc/sudoers, so automation uses that where it exists.
+# Set ansible_become_exe yourself in the inventory to override this detection.
+- name: Identify the sudo implementation
+  ansible.builtin.shell: |
+    set -o pipefail
+    sudo --version 2>&1 | sed -n 1p
+    command -v sudo.ws || echo no-sudo-ws
+  args:
+    executable: /bin/bash
+  register: hardening_sudo_probe
+  changed_when: false
+  check_mode: false
+  when: ansible_become_exe is not defined
+
+- name: Use classic sudo where sudo-rs is the default
+  ansible.builtin.set_fact:
+    ansible_become_exe: sudo.ws
+  when:
+    - ansible_become_exe is not defined
+    - "'sudo-rs' in hardening_sudo_probe.stdout"
+    - "'no-sudo-ws' not in hardening_sudo_probe.stdout"
+
+- name: Stop when no usable sudo exists for automation
+  ansible.builtin.fail:
+    msg: >-
+      This host's sudo is sudo-rs and the classic sudo (sudo.ws) is not installed. Ansible
+      cannot answer sudo-rs' password prompt. Install the 'sudo' package, or use passwordless
+      sudo for the automation user and set ansible_become_exe: sudo in the inventory.
+  when:
+    - ansible_become_exe is not defined
+    - "'sudo-rs' in hardening_sudo_probe.stdout"
+    - "'no-sudo-ws' in hardening_sudo_probe.stdout"
+    - (ansible_become_password | default('')) | length > 0
