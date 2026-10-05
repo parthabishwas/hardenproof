@@ -446,6 +446,17 @@ def cell(r, link=True):
     return f'<span class="c {cls}" data-tip="{tip}"></span>'
 
 
+CIS_TH = '<th title="Section of the CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0">CIS</th>'
+
+
+def cis_td(r):
+    """Benchmark section of one check; a dash for checks that are not from the benchmark."""
+    ref = str(r.get("cis") or "-").strip()
+    if ref in ("", "-"):
+        return '<td class="lv" title="Not a CIS Benchmark item">-</td>'
+    return f'<td class="lv">{escape(ref)}</td>'
+
+
 def status_html(status):
     cls = STATUS_CLASS[status]
     return f'<span class="st"><span class="c {cls}"></span>{STATUS_WORD[status]}</span>'
@@ -541,6 +552,10 @@ def render_html(d):
         b = f'<td class="n">{d["blyn"].get("hardening_index", "n/a")}</td>' if d["blyn"] else ('<td class="n"></td>' if base is not None else '')
         w(f'<tr><td>Lynis hardening index (0 to 100)</td>{b}<td class="n big">{d["lyn"].get("hardening_index", "n/a")}</td>'
           f'<td class="n" colspan="5">{len(d["lyn"]["warnings"])} warnings, {len(d["lyn"]["suggestions"])} suggestions</td></tr>')
+    elif d["blyn"]:
+        # The baseline has an index and this audit skipped Lynis: say so, do not drop the row.
+        w(f'<tr><td>Lynis hardening index (0 to 100)</td><td class="n">{d["blyn"].get("hardening_index", "n/a")}</td>'
+          '<td class="n">not run</td><td class="n" colspan="5">Lynis was skipped for this audit</td></tr>')
     w('</tbody></table></div>')
     if base is not None and (delta["regressed"] or delta["reclassified"]):
         w('<h2 style="margin-top:1.6rem;font-size:1.15rem">Status changes other than fixes</h2>'
@@ -568,11 +583,11 @@ def render_html(d):
         if not items:
             w(f'<p>{empty}</p></section>')
             return
-        w('<div class="scroll"><table><thead><tr><th>ID</th><th>Level</th><th>Family</th><th>Check</th><th>Evidence</th></tr></thead><tbody>')
+        w('<div class="scroll"><table><thead><tr><th>ID</th>' + CIS_TH + '<th>Level</th><th>Family</th><th>Check</th><th>Evidence</th></tr></thead><tbody>')
         for r in items:
             fam = cat.get(r["group"], {}).get("title", r["group"])
             lvl = e(LEVEL_WORD.get(r["level"], r["level"]))
-            w(f'<tr><td class="id"><a href="#chk-{e(r["id"])}">{e(r["id"])}</a></td><td>{lvl}</td>'
+            w(f'<tr><td class="id"><a href="#chk-{e(r["id"])}">{e(r["id"])}</a></td>{cis_td(r)}<td>{lvl}</td>'
               f'<td><a href="#fam-{e(r["group"])}">{e(fam)}</a></td><td>{e(r["title"])}{exc_note(r)}</td><td class="ev">{e(r["evidence"])}</td></tr>')
         w('</tbody></table></div></section>')
 
@@ -584,10 +599,10 @@ def render_html(d):
       '<p class="note">Findings someone has decided to live with, from the environment\'s exceptions file. '
       'Each has an owner and an expiry date; when it expires the finding returns to the open list.</p>')
     if acc:
-        w('<div class="scroll"><table><thead><tr><th>ID</th><th>Check</th><th>Reason</th><th>Accepted by</th><th>Expires</th><th>Evidence</th></tr></thead><tbody>')
+        w('<div class="scroll"><table><thead><tr><th>ID</th>' + CIS_TH + '<th>Check</th><th>Reason</th><th>Accepted by</th><th>Expires</th><th>Evidence</th></tr></thead><tbody>')
         for r in acc:
             x = r["exception"]
-            w(f'<tr><td class="id"><a href="#chk-{e(r["id"])}">{e(r["id"])}</a></td><td>{e(r["title"])}</td><td>{e(x["reason"])}</td>'
+            w(f'<tr><td class="id"><a href="#chk-{e(r["id"])}">{e(r["id"])}</a></td>{cis_td(r)}<td>{e(r["title"])}</td><td>{e(x["reason"])}</td>'
               f'<td>{e(x["accepted_by"])}</td><td class="lv">{e(x["expires"])}</td><td class="ev">{e(r["evidence"])}</td></tr>')
         w('</tbody></table></div>')
     else:
@@ -625,7 +640,7 @@ def render_html(d):
             if maps:
                 w(f'<dt>Maps to</dt><dd>{e("; ".join(maps))}</dd>')
             w('</dl>')
-        w('<div class="scroll"><table><thead><tr><th>Status</th><th>ID</th><th>Level</th><th>Check</th><th>Evidence</th></tr></thead><tbody>')
+        w('<div class="scroll"><table><thead><tr><th>Status</th><th>ID</th>' + CIS_TH + '<th>Level</th><th>Check</th><th>Evidence</th></tr></thead><tbody>')
         for r in cur.values():
             if r["group"] != g:
                 continue
@@ -633,7 +648,7 @@ def render_html(d):
             if base is not None and r["id"] in base and base[r["id"]]["status"] != r.get("raw_status", r["status"]):
                 was = f'<div class="was">was {STATUS_WORD[base[r["id"]]["status"]].lower()}</div>'
             w(f'<tr id="chk-{e(r["id"])}" data-status="{r["status"]}"><td>{status_html(r["status"])}{was}</td>'
-              f'<td class="id">{e(r["id"])}</td><td>{e(LEVEL_WORD.get(r["level"], r["level"]))}</td><td>{e(r["title"])}{exc_note(r)}</td><td class="ev">{e(r["evidence"])}</td></tr>')
+              f'<td class="id">{e(r["id"])}</td>{cis_td(r)}<td>{e(LEVEL_WORD.get(r["level"], r["level"]))}</td><td>{e(r["title"])}{exc_note(r)}</td><td class="ev">{e(r["evidence"])}</td></tr>')
         w('</tbody></table></div></details>')
     w('</section>')
 
@@ -702,8 +717,9 @@ def render_html(d):
             w('<p>No warnings or suggestions.</p>')
         w('</section>')
 
-    w(f'<footer><p>Generated by HardenProof (tools/report.py) from cis_audit.tsv (audit script v{e(meta.get("script_version", "?"))}) '
-      'and lynis-report.dat. No number on this page was entered by hand.</p>'
+    w(f'<footer><p>Generated by HardenProof (tools/report.py) from cis_audit.tsv (audit script v{e(meta.get("script_version", "?"))})'
+      + (' and lynis-report.dat' if d["lyn"] else '; Lynis was not run for this audit')
+      + '. No number on this page was entered by hand.</p>'
       '<p>CIS references are section numbers of the CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0, the nearest published '
       'benchmark. Confirm exact recommendation numbers against the licensed document before quoting them.</p></footer>')
     w(f'</div><div id="tip" role="tooltip"></div><script>{JS}</script></body></html>')

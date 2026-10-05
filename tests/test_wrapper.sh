@@ -17,15 +17,16 @@ echo "  hosts ($(tr ',' '\n' <<<"$hosts" | grep -c .)):"; tr ',' '\n' <<<"$hosts
 STUB
 cat > "$tmp/bin/ansible-playbook" <<'STUB'
 #!/usr/bin/env bash
-limit=""; label=""; rdir=""; pb=""
+limit=""; label=""; rdir=""; pb=""; nolynis=""
 while [ $# -gt 0 ]; do
   case $1 in
     -l) limit=$2; shift ;;
-    -e) case $2 in label=*) label=${2#label=} ;; reports_dir=*) rdir=${2#reports_dir=} ;; esac; shift ;;
+    -e) case $2 in label=*) label=${2#label=} ;; reports_dir=*) rdir=${2#reports_dir=} ;;
+                   hardening_audit_lynis=false) nolynis=1 ;; esac; shift ;;
     *.yml) pb=$1 ;;
   esac; shift
 done
-echo "$pb ${limit:-all} $label" >> "$STUB_LOG"
+echo "$pb ${limit:-all} $label${nolynis:+ nolynis}" >> "$STUB_LOG"
 rc=0
 case $pb in
   */audit.yml)
@@ -111,6 +112,14 @@ run 1 "apply without confirmation" apply < /dev/null
 if grep -q harden.yml "$STUB_LOG"; then fail "apply ran without confirmation"; fi
 STUB_CHANGE_RC=2 run 2 "failed apply inside all" all -y
 grep -q 'audit.yml' "$STUB_LOG" || fail "no audit after a failed apply"
+
+# --- --no-lynis reaches the audit playbook, and only when asked for --------------------------
+: > "$STUB_LOG"
+run 0 "audit" audit
+if grep -q nolynis "$STUB_LOG"; then fail "Lynis skipped without --no-lynis"; fi
+: > "$STUB_LOG"
+run 0 "audit --no-lynis" audit --no-lynis
+grep -q 'audit.yml .* nolynis' "$STUB_LOG" || fail "--no-lynis was not passed to the audit playbook"
 
 # --- argument handling ------------------------------------------------------------------
 ./harden.sh revert -y -i "$tmp/inv/hosts.yml" nonsense >/dev/null 2>&1 && fail "unknown revert family accepted" || true

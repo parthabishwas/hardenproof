@@ -14,6 +14,7 @@
 #   -y, --yes              do not ask for confirmation before changing hosts
 #   --rebaseline           start over: archive this host's saved audits and take a new baseline
 #   --fail-on-regression   exit 3 if a check that passed in the previous audit now fails
+#   --no-lynis             audit with the CIS-mapped checks only; do not copy or run Lynis
 #   --version              print the version and exit
 #
 # Revert families: firewall ssh pam sudo accounts sysctl modules mounts services cron banners
@@ -54,7 +55,7 @@ case $CMD in
   *) die "unknown command: $CMD (try --help)" ;;
 esac
 
-INV_ARG=""; LIMIT=""; YES=0; REBASE=0; FAILREG=0; FAMILIES=()
+INV_ARG=""; LIMIT=""; YES=0; REBASE=0; FAILREG=0; LYNIS=(); FAMILIES=()
 while [ $# -gt 0 ]; do
   case $1 in
     -i|-l) [ $# -ge 2 ] || die "$1 needs a value"
@@ -62,6 +63,7 @@ while [ $# -gt 0 ]; do
     -y|--yes) YES=1; shift ;;
     --rebaseline) REBASE=1; shift ;;
     --fail-on-regression) FAILREG=1; shift ;;
+    --no-lynis) LYNIS=(-e hardening_audit_lynis=false); shift ;;
     -h|--help) usage 0 ;;
     -*) die "unknown option: $1" ;;
     *) [ "$CMD" = revert ] || die "unexpected argument: $1"
@@ -111,7 +113,8 @@ has_baseline() { [ -f "$REPORTS/$1/baseline/cis_audit.tsv" ]; }
 audit() {  # label host...
   local label=$1; shift
   say "Audit ($label) - read-only: $*"
-  "$PB" "${INV[@]}" -l "$(join_hosts "$@")" playbooks/audit.yml -e "label=$label" -e "reports_dir=$REPORTS_ABS"
+  "$PB" "${INV[@]}" -l "$(join_hosts "$@")" playbooks/audit.yml -e "label=$label" -e "reports_dir=$REPORTS_ABS" \
+    ${LYNIS[@]+"${LYNIS[@]}"}
 }
 
 # newest audit run of a host: the last timestamped directory, or the baseline

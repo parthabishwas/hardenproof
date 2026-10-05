@@ -19,6 +19,10 @@ hardening_ssh_password_auth: false
 # Accounts allowed to log in over SSH. MUST contain the automation account.
 hardening_ssh_allow_users: []
 hardening_ssh_port: 22
+# Run Lynis as an independent second opinion during every audit. false (or ./harden.sh
+# --no-lynis) leaves it out: nothing is downloaded, nothing is placed under /opt, and the
+# report has no Lynis index. The CIS-mapped checks and scores are not affected.
+hardening_audit_lynis: true
 # Minutes before the access-critical configuration (PAM, sudoers, sshd, accounts, firewall) is
 # restored automatically if a stage does not finish. The timer is re-armed at the start of
 # each guarded stage, so this is the budget for the slowest single stage on the slowest host

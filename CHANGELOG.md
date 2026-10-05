@@ -3,6 +3,15 @@
 Versions are those in the `VERSION` file (`./harden.sh --version`). The audit script carries
 its own version, recorded in every result file.
 
+## 1.0.2 - 2026-10-05
+
+- `--no-lynis` (or `hardening_audit_lynis: false`) audits with the CIS-mapped checks only:
+  Lynis is not downloaded, copied to the target or run. A report whose baseline has a Lynis
+  index shows the current one as "not run".
+- The report shows the CIS Benchmark section of every check in a **CIS** column (open
+  findings, accepted risks, manual review and the control-family tables), not only per family.
+- Issue and pull request templates, a code of conduct and README badges.
+
 ## 1.0.1 - 2026-10-05
 
 First published version. 0.1.0 was an internal milestone and was never released; everything

@@ -41,7 +41,8 @@ Run it on a clone or snapshot first, and have console access (hypervisor, provid
 console, BMC) before running it on anything you cannot rebuild. `./harden.sh audit` and
 `./harden.sh plan` change no configuration and are safe to run anywhere. (`audit` leaves
 three things on the host: the audit script in `/var/lib/hardening-audit/`, a pinned Lynis in
-`/opt/lynis-<version>/`, and Lynis' log and report in `/var/log/`.)
+`/opt/lynis-<version>/`, and Lynis' log and report in `/var/log/`. With `--no-lynis` only the
+audit script is left.)
 
 ## Supported systems
 
@@ -160,6 +161,7 @@ python3 -m venv .venv
 | `-y`, `--yes` | Skip the confirmation prompt |
 | `--rebaseline` | Start over: move the host's saved audits to `reports/<host>/_archive-<time>/` and take a new baseline |
 | `--fail-on-regression` | Exit 3 when a check that passed in the previous audit now fails |
+| `--no-lynis` | Audit with the CIS-mapped checks only. Lynis is not downloaded, copied or run, and the report has no Lynis index. To make that permanent, set `hardening_audit_lynis: false` in your overrides |
 | `--version` | Print the version |
 
 Commands that change hosts list them and wait for you to type `yes`. An existing baseline is
@@ -410,7 +412,8 @@ light and dark.
 - **Check map.** One cell per check, grouped by control family, baseline beside current.
   Selecting a cell opens that check's evidence.
 - **Scores** per CIS level, with the Lynis hardening index.
-- **Open findings, accepted risks and manual-review items**, each linked to its control family.
+- **Open findings, accepted risks and manual-review items**, each with its CIS section and
+  level, linked to its control family.
 - **Control families.** Every check with its evidence, next to what the control changes, why,
   its impact, and how to verify and undo it. Filter by text or status.
 - **History.** The Level 1 score at every audit of the host, and what regressed or was fixed

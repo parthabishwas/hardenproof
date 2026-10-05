@@ -91,4 +91,30 @@ expect 0 "fleet index" report --fleet "$tmp"
 grep -q 'web01' "$tmp/index.html" && grep -q 'web02' "$tmp/index.html" || fail "fleet index missing a host"
 grep -q 'skipping web03' "$tmp/err" || fail "unreadable host not reported"
 
+# --- every check row carries its CIS section ---------------------------------------------
+"$PY" - "$run/report.html" "$run/cis_audit.tsv" <<'PY'
+import re, sys
+html = open(sys.argv[1]).read()
+rows = [l.rstrip("\n").split("\t") for l in open(sys.argv[2]) if l.strip() and not l.startswith("#")]
+for cid, cis in [(r[0], r[1]) for r in rows]:
+    m = re.search(r'<tr id="chk-%s"[^>]*>.*?</tr>' % re.escape(cid), html, re.S)
+    assert m, f"{cid}: no row in the family tables"
+    assert f'<td class="lv">{cis}</td>' in m.group(0) or (cis == "-" and 'Not a CIS Benchmark item' in m.group(0)), f"{cid}: CIS section {cis} missing"
+for sec in ("open", "manual"):
+    body = re.search(r'<section id="%s">.*?</section>' % sec, html, re.S).group(0)
+    assert body.count("<th") == 0 or ">CIS</th>" in body, f"{sec}: no CIS column"
+    for tr in re.findall(r"<tr><td.*?</tr>", body, re.S):
+        assert tr.count("<td") == 6, f"{sec}: a row does not have six cells"
+PY
+
+# --- an audit without Lynis (--no-lynis) -------------------------------------------------
+mkdir -p "$tmp/nl/run"; cp "$run/cis_audit.tsv" "$tmp/nl/run/"
+expect 0 "report without Lynis" report --current "$tmp/nl/run" --baseline "$base" --host web01 --out "$tmp/nl/run"
+grep -q 'Lynis was skipped for this audit' "$tmp/nl/run/report.html" || fail "skipped Lynis not stated beside the baseline index"
+if grep -q 'id="lynis"' "$tmp/nl/run/report.html"; then fail "Lynis section shown without Lynis data"; fi
+if grep -q 'and lynis-report.dat' "$tmp/nl/run/report.html"; then fail "footer cites a Lynis report that does not exist"; fi
+mkdir -p "$tmp/nl/base"; cp "$base/cis_audit.tsv" "$tmp/nl/base/"
+expect 0 "report with no Lynis at all" report --current "$tmp/nl/run" --baseline "$tmp/nl/base" --host web01 --out "$tmp/nl/run"
+if grep -qi 'lynis hardening index' "$tmp/nl/run/report.html"; then fail "Lynis row shown when Lynis never ran"; fi
+
 echo "report tests passed"

@@ -5,7 +5,8 @@
 #
 # Footprint on the target: /opt/lynis-<version> (root-owned, pinned release),
 # /var/lib/hardening-audit/ (the audit script) and Lynis' own log/report under /var/log.
-# Nothing else is modified.
+# Nothing else is modified. With hardening_audit_lynis=false (./harden.sh --no-lynis) Lynis is
+# neither copied nor run, and only the audit script is left on the target.
 - name: Detect how to escalate privileges
   hosts: all
   become: false
@@ -44,6 +45,7 @@
       delegate_to: localhost
       become: false
       run_once: true
+      when: hardening_audit_lynis | default(true) | bool
 
     - name: Create audit working directory
       ansible.builtin.file:
@@ -81,6 +83,7 @@
         owner: root
         group: root
         creates: "{{ lynis_dir }}/lynis"
+      when: hardening_audit_lynis | default(true) | bool
 
     - name: Run Lynis
       ansible.builtin.command:
@@ -91,6 +94,7 @@
       register: lynis_run
       changed_when: false
       failed_when: lynis_run.rc not in [0, 78]   # 78 = warnings found
+      when: hardening_audit_lynis | default(true) | bool
 
     - name: Collect Lynis report and log
       ansible.builtin.fetch:
@@ -100,3 +104,4 @@
       loop:
         - /var/log/lynis-report.dat
         - /var/log/lynis.log
+      when: hardening_audit_lynis | default(true) | bool
