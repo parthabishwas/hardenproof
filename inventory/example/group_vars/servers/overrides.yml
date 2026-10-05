@@ -21,6 +21,10 @@ hardening_allow_reboot: false
 hardening_apply_updates: false
 # hardening_guard_minutes: 45
 
+# Audit without Lynis: nothing is downloaded or placed under /opt on the host, and the report
+# has no Lynis index. Keep one setting per environment so reports stay comparable.
+# hardening_audit_lynis: false
+
 # cis (default) or pci (90-day password age, 30-minute lockout).
 hardening_profile: cis
 

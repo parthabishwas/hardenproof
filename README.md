@@ -70,7 +70,7 @@ a hardening pass.
 - Python 3.10 or later, `ssh`, `git`. `sshpass` only if you install the SSH key with a
   password.
 - Network access to the targets, to `galaxy.ansible.com` (collections, once) and to
-  `github.com` (the pinned Lynis release, once).
+  `github.com` (the pinned Lynis release, once; not needed with `--no-lynis`).
 
 **On each target:**
 
@@ -176,6 +176,7 @@ The steps are ordinary playbooks if you prefer to run them yourself:
 
 ```bash
 .venv/bin/ansible-playbook -i <inventory> playbooks/audit.yml -e label=baseline
+.venv/bin/ansible-playbook -i <inventory> playbooks/audit.yml -e hardening_audit_lynis=false   # no Lynis
 .venv/bin/ansible-playbook -i <inventory> playbooks/harden.yml --check --diff
 .venv/bin/ansible-playbook -i <inventory> playbooks/harden.yml --tags ssh       # one stage
 .venv/bin/python tools/report.py --current reports/<host>/<run> --baseline reports/<host>/baseline \
@@ -212,6 +213,7 @@ Set these per environment in `inventory/<env>/group_vars/<group>/overrides.yml`.
 | `hardening_tmp_tmpfs` | `false` | On 22.04 and 24.04, `true` moves `/tmp` to a tmpfs at the next boot so it can be `noexec` |
 | `hardening_disable_units` | `[]` | Services to mask. Empty because "unneeded" depends on the host |
 | `hardening_sysctl_extra` | `{}` | Kernel parameters that must differ on this host |
+| `hardening_audit_lynis` | `true` | `false` audits with the CIS-mapped checks only: Lynis is not downloaded, copied to the host or run. Same as `--no-lynis` on every audit |
 
 All switches, with the reasoning for each default, are in
 [`roles/hardening_extras/defaults/main.yml`](roles/hardening_extras/defaults/main.yml) and
@@ -411,14 +413,14 @@ light and dark.
 
 - **Check map.** One cell per check, grouped by control family, baseline beside current.
   Selecting a cell opens that check's evidence.
-- **Scores** per CIS level, with the Lynis hardening index.
+- **Scores** per CIS level, with the Lynis hardening index (or "not run" when Lynis was skipped).
 - **Open findings, accepted risks and manual-review items**, each with its CIS section and
   level, linked to its control family.
 - **Control families.** Every check with its evidence, next to what the control changes, why,
   its impact, and how to verify and undo it. Filter by text or status.
 - **History.** The Level 1 score at every audit of the host, and what regressed or was fixed
   since the previous one.
-- **Lynis** warnings and suggestions.
+- **Lynis** warnings and suggestions, unless the audit ran with `--no-lynis`.
 
 `results.json` beside it carries the same data for dashboards or CI, and `reports/index.html`
 summarises all hosts. Text from the audited host is escaped everywhere it is shown.
