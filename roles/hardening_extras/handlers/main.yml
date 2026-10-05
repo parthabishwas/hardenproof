@@ -29,7 +29,7 @@
 - name: Load audit rules
   ansible.builtin.shell: |
     set -o pipefail
-    if auditctl -s | grep -q '^enabled 2'; then
+    if auditctl -s | grep '^enabled 2' >/dev/null; then
       echo "audit config is immutable; new rules load at next boot"; touch /var/run/reboot-required
     else
       augenrules --load

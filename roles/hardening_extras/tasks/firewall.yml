@@ -10,10 +10,20 @@
     name: ufw
     state: present
 
+# Whatever the allow list says, the SSH port is never left out.
+- name: Always allow SSH
+  community.general.ufw:
+    rule: allow
+    port: "{{ hardening_ssh_port | string }}"
+    proto: tcp
+    comment: "SSH administration"
+  when: >-
+    hardening_fw_allow | map(attribute='port') | map('string') | list is not contains(hardening_ssh_port | string)
+
 - name: Inbound allow list
   community.general.ufw:
     rule: allow
-    port: "{{ item.port }}"
+    port: "{{ item.port | string }}"
     proto: "{{ item.proto | default('tcp') }}"
     from_ip: "{{ item.from | default('any') }}"
     comment: "{{ item.comment | default(omit) }}"

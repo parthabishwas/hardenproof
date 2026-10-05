@@ -5,8 +5,11 @@
 #   ansible-playbook playbooks/harden.yml                    # apply
 #   ansible-playbook playbooks/harden.yml --tags ssh         # one stage (guard still applies)
 #
-# Stages: preflight -> backup -> arm rollback guard -> os (dev-sec) -> extras (CIS gaps)
+# Stages: preflight -> backup -> arm rollback guard -> packages -> os (dev-sec) -> extras (CIS gaps)
 #         -> ssh (dev-sec) -> prove access -> disarm guard -> AIDE baseline -> reboot if needed
+#
+# The guard is re-armed at the start of the extras and ssh stages, and the run fails loudly
+# if it ever fires: a host that was rolled back must not be reported as hardened.
 
 - name: Detect how to escalate privileges
   hosts: all
@@ -28,24 +31,31 @@
         that:
           - ansible_facts.distribution == 'Ubuntu'
           - ansible_facts.distribution_version is version('22.04', '>=')
-        fail_msg: "Only Ubuntu 22.04+ is covered (validated on 26.04)."
+        fail_msg: "Only Ubuntu 22.04 and later is covered (tested on 22.04, 24.04 and 26.04)."
+
+    - name: The automation account must be named, and must not be root
+      ansible.builtin.assert:
+        that:
+          - ansible_user is defined
+          - ansible_user != 'root'
+        fail_msg: >-
+          Set ansible_user in the inventory to a non-root account with sudo. Root login over SSH
+          is disabled by this baseline, so a run that connects as root locks itself out.
 
     - name: The automation account must stay allowed to log in
       ansible.builtin.assert:
         that:
           - ansible_user in hardening_ssh_allow_users
           - >-
-            hardening_fw_allow is not defined or
-            (hardening_fw_allow | selectattr('port', 'equalto', hardening_ssh_port | string) | list | length > 0)
+            not (hardening_firewall | bool) or
+            (hardening_fw_allow | map(attribute='port') | map('string') | list is contains(hardening_ssh_port | string))
         fail_msg: >-
           {{ ansible_user }} is not in hardening_ssh_allow_users, or port {{ hardening_ssh_port }}
           is not in hardening_fw_allow. Applying this configuration would lock automation out.
 
     - name: Key-based login must work before passwords are disabled
       ansible.builtin.command: >-
-        ssh -o BatchMode=yes -o PasswordAuthentication=no -o ControlPath=none {{ ansible_ssh_common_args | default('') }}
-        -o IdentitiesOnly=yes -i {{ ansible_ssh_private_key_file }}
-        -p {{ ansible_port | default(22) }} {{ ansible_user }}@{{ ansible_host }} true
+        ssh {{ hardening_probe_opts }} -o PasswordAuthentication=no {{ hardening_probe_target }} true
       delegate_to: localhost
       become: false
       changed_when: false
@@ -65,9 +75,20 @@
         set -o pipefail
         if command -v dockerd >/dev/null 2>&1 || [ -x /snap/bin/docker ]; then echo docker=yes; else echo docker=no; fi
         if findmnt -rn /var/log/audit >/dev/null 2>&1; then echo auditfs=yes; else echo auditfs=no; fi
-        if ip -6 route show default 2>/dev/null | grep -q 'proto ra' && ! systemctl is-active --quiet systemd-networkd; then
+        if ip -6 route show default 2>/dev/null | grep 'proto ra' >/dev/null && ! systemctl is-active --quiet systemd-networkd; then
           echo kernelra=yes; else echo kernelra=no; fi
         if [ -n "$(ip -6 -o addr show scope global 2>/dev/null)" ]; then echo ipv6=yes; else echo ipv6=no; fi
+        # something on this host routes packets (containers, VMs, VPN): do not switch it off
+        [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" = 1 ] && echo fwd4=yes
+        [ "$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null)" = 1 ] && echo fwd6=yes
+        # several default routes or policy routing: strict reverse-path filtering drops replies
+        if [ "$(ip -4 route show default 2>/dev/null | wc -l)" -gt 1 ] || [ "$(ip -4 rule show 2>/dev/null | wc -l)" -gt 3 ]; then echo multipath=yes; fi
+        echo "sshport=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')"
+        echo "uid=$(id -u {{ ansible_user | quote }})"
+        # password age of the automation account: "<has password> <days since change>"
+        getent shadow {{ ansible_user | quote }} | awk -F: -v t="$(( $(date +%s) / 86400 ))" '{print "pwage=" (($2 ~ /^\$/) ? t-$3 : -1)}'
+        if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then echo ufw=active; else echo ufw=inactive; fi
+        true
       args:
         executable: /bin/bash
       environment:
@@ -82,12 +103,49 @@
         hardening_audit_dedicated_fs: "{{ 'auditfs=yes' in hardening_traits.stdout_lines }}"
         hardening_kernel_ra: "{{ 'kernelra=yes' in hardening_traits.stdout_lines }}"
         hardening_ipv6_in_use: "{{ 'ipv6=yes' in hardening_traits.stdout_lines }}"
+        hardening_forwarding_v4: "{{ 'fwd4=yes' in hardening_traits.stdout_lines }}"
+        hardening_forwarding_v6: "{{ 'fwd6=yes' in hardening_traits.stdout_lines }}"
+        hardening_multipath: "{{ 'multipath=yes' in hardening_traits.stdout_lines }}"
+        hardening_ufw_was_active: "{{ 'ufw=active' in hardening_traits.stdout_lines }}"
+        hardening_sshd_port_now: "{{ hardening_traits.stdout_lines | select('match', '^sshport=') | first | default('sshport=') | regex_replace('^sshport=', '') }}"
+        hardening_automation_uid: "{{ hardening_traits.stdout_lines | select('match', '^uid=') | first | default('uid=0') | regex_replace('^uid=', '') }}"
+        hardening_automation_pwage: "{{ hardening_traits.stdout_lines | select('match', '^pwage=') | first | default('pwage=-1') | regex_replace('^pwage=', '') }}"
         hardening_run_id: "{{ ansible_facts.date_time.iso8601_basic_short }}"
+
+    # dev-sec strips the login shell and locks the password of every account with a UID from
+    # 1 to 999, and sets a maximum password age on the rest. Neither must hit the account this
+    # run depends on: the rollback guard cannot give back an expired password.
+    - name: The automation account must survive the account hardening
+      ansible.builtin.assert:
+        that:
+          - hardening_automation_uid | int >= 1000 or ansible_user in (os_ignore_users | default([]))
+          - >-
+            hardening_automation_pwage | int < os_auth_pw_max_age | int or
+            ansible_user in (os_users_without_password_ageing | default([]))
+        fail_msg: >-
+          {{ ansible_user }} would be locked out by the account hardening: its UID is
+          {{ hardening_automation_uid }} (system accounts lose their shell; add it to
+          os_ignore_users) or its password was last changed {{ hardening_automation_pwage }}
+          days ago, which is older than the {{ os_auth_pw_max_age }}-day maximum this run sets
+          (change the password first, or add the account to os_users_without_password_ageing).
+
+    # The access check after the ssh stage connects on the inventory's port. Moving sshd to a
+    # different port in the same run would fail that check and roll SSH back.
+    - name: The SSH port is not changed by this run
+      ansible.builtin.assert:
+        that: hardening_sshd_port_now == '' or hardening_sshd_port_now | string == hardening_ssh_port | string
+        fail_msg: >-
+          sshd listens on port {{ hardening_sshd_port_now }} but hardening_ssh_port is
+          {{ hardening_ssh_port }}. Changing the port during a hardening run is not supported.
+          Set hardening_ssh_port (and its hardening_fw_allow entry) to {{ hardening_sshd_port_now }},
+          or change the port as a separate, manual step first.
 
     - name: Decisions taken from host traits
       ansible.builtin.debug:
         msg:
-          - "Docker present: {{ hardening_docker_present }} -> IPv4 forwarding is {{ 'kept on' if hardening_docker_present else 'turned off' }}"
+          - "Docker present: {{ hardening_docker_present }}; IPv4 forwarding already on: {{ hardening_forwarding_v4 }} -> IPv4 forwarding is {{ 'kept on' if (hardening_docker_present or hardening_forwarding_v4) else 'turned off' }}"
+          - "IPv6 forwarding already on: {{ hardening_forwarding_v6 }} -> {{ 'kept on' if hardening_forwarding_v6 else 'turned off' }}"
+          - "Several default routes or policy routing: {{ hardening_multipath }} -> reverse-path filtering is {{ 'loose (2), because strict mode drops replies on asymmetric paths' if hardening_multipath else 'strict (1)' }}"
           - "Dedicated /var/log/audit filesystem: {{ hardening_audit_dedicated_fs }} -> audit logs {{ 'are kept and the host halts when the volume is full (CIS)' if hardening_audit_dedicated_fs else 'rotate within a fixed size; two CIS items stay open by design' }}"
           - "IPv6 in use: {{ hardening_ipv6_in_use }} -> sshd listens on {{ 'IPv4 and IPv6' if hardening_ipv6_in_use else 'IPv4' }}"
           - "IPv6 default route from kernel router advertisements: {{ hardening_kernel_ra }}{{ ' -> WARNING: accept_ra=0 will remove it. Set hardening_sysctl_extra to keep net.ipv6.conf.all.accept_ra and net.ipv6.conf.default.accept_ra at 1, or configure IPv6 statically.' if hardening_kernel_ra else '' }}"
@@ -113,12 +171,30 @@
         group: root
         mode: "0700"
 
+    - name: Install the helper that fingerprints the system state
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/hardening_extras/files/state-hash.sh"
+        dest: /var/backups/hardening/state-hash.sh
+        owner: root
+        group: root
+        mode: "0700"
+
     - name: Back up /etc, the PAM profiles and the pre-change system state
       ansible.builtin.shell: |
         set -e -o pipefail
         cd /var/backups/hardening/{{ hardening_run_id }}
-        tar -czpf etc.tar.gz -C / etc
-        tar -czpf access-critical.tar.gz -C / etc/pam.d etc/ssh etc/sudoers etc/sudoers.d etc/security usr/share/pam-configs etc/login.defs
+        # tar exits 1 when a file changes while it is being read; that is not a failed backup
+        tar -czpf etc.tar.gz -C / etc || [ $? -eq 1 ]
+        # What rollback.sh restores. Accounts are included because dev-sec changes shells,
+        # locks and password ageing; the firewall, so that a firewall that was on stays on.
+        crit=""
+        for f in etc/pam.d etc/ssh etc/sudoers etc/sudoers.d etc/security usr/share/pam-configs etc/login.defs \
+                 etc/passwd etc/shadow etc/group etc/gshadow etc/ufw etc/default/ufw; do
+          [ -e "/$f" ] && crit="$crit $f"
+        done
+        # shellcheck disable=SC2086
+        tar -czpf access-critical.tar.gz -C / $crit || [ $? -eq 1 ]
+        echo "{{ 'active' if hardening_ufw_was_active else 'inactive' }}" > ufw.before
         sysctl -a > sysctl.before 2>/dev/null || true
         systemctl list-unit-files --no-pager > unit-files.before
         dpkg -l > dpkg.before
@@ -128,7 +204,7 @@
         # "pristine" = the oldest backup, i.e. the system before the first hardening run.
         # playbooks/revert.yml restores from it.
         [ -e /var/backups/hardening/pristine ] || ln -sfn "$(find /var/backups/hardening -mindepth 1 -maxdepth 1 -type d | sort | sed -n 1p)" /var/backups/hardening/pristine
-        touch /var/backups/hardening/.run-start
+        sh /var/backups/hardening/state-hash.sh > /var/backups/hardening/.state-before
       args:
         executable: /bin/bash
         creates: "/var/backups/hardening/{{ hardening_run_id }}/etc.tar.gz"
@@ -147,9 +223,25 @@
       ansible.builtin.shell: |
         systemctl stop hardening-rollback.timer 2>/dev/null || true
         systemctl reset-failed hardening-rollback.service 2>/dev/null || true
+        rm -f /var/backups/hardening/.rollback-fired
         systemd-run --unit=hardening-rollback --on-active={{ hardening_guard_minutes }}m \
           --description="Hardening rollback guard" /var/backups/hardening/rollback.sh
       changed_when: true
+
+# Everything that installs software happens before the stages that inspect the system, so
+# that one run is enough: dev-sec's setuid clean-up and the audit rules for privileged
+# commands both see the final set of binaries.
+- name: Packages the later stages rely on
+  hosts: all
+  become: true
+  gather_facts: false
+  tags: [os, extras, post]
+  tasks:
+    - name: Install the integrity checker and what it brings with it
+      ansible.builtin.include_role:
+        name: hardening_extras
+        tasks_from: aide_install.yml
+      when: hardening_aide | default(true) | bool
 
 - name: OS baseline (devsec.hardening.os_hardening)
   hosts: all
@@ -164,6 +256,9 @@
   become: true
   gather_facts: false
   tags: [extras]
+  pre_tasks:
+    - name: Re-arm the rollback guard
+      ansible.builtin.import_tasks: tasks/rearm-guard.yml
   roles:
     - role: hardening_extras
 
@@ -172,8 +267,15 @@
   become: true
   gather_facts: false
   tags: [ssh]
+  pre_tasks:
+    - name: Re-arm the rollback guard
+      ansible.builtin.import_tasks: tasks/rearm-guard.yml
   roles:
     - role: devsec.hardening.ssh_hardening
+  post_tasks:
+    - name: Note that the ssh stage ran
+      ansible.builtin.set_fact:
+        hardening_ssh_stage_ran: true
 
 - name: Prove access, then disarm the guard
   hosts: all
@@ -186,29 +288,42 @@
 
     - name: New SSH session with the automation key
       ansible.builtin.command: >-
-        ssh -o BatchMode=yes -o PasswordAuthentication=no -o ControlPath=none {{ ansible_ssh_common_args | default('') }}
-        -o IdentitiesOnly=yes -i {{ ansible_ssh_private_key_file }}
-        -p {{ ansible_port | default(22) }} {{ ansible_user }}@{{ ansible_host }} true
+        ssh {{ hardening_probe_opts }} -o PasswordAuthentication=no {{ hardening_probe_target }} true
       delegate_to: localhost
       changed_when: false
       when: not ansible_check_mode
 
+    # Only meaningful when the ssh stage ran in this invocation: with --tags os or
+    # --skip-tags ssh the server may legitimately still accept passwords.
     - name: Password login must now be refused
       ansible.builtin.command: >-
-        ssh -o BatchMode=yes -o PubkeyAuthentication=no -o PreferredAuthentications=password
-        -o ControlPath=none {{ ansible_ssh_common_args | default('') }} -p {{ ansible_port | default(22) }} {{ ansible_user }}@{{ ansible_host }} true
+        ssh -o BatchMode=yes -o ControlPath=none {{ ansible_ssh_common_args | default('') }}
+        -o PubkeyAuthentication=no -o PreferredAuthentications=password
+        -p {{ ansible_port | default(22) }} {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }} true
       delegate_to: localhost
       register: hardening_pw_probe
       changed_when: false
       failed_when: "'Permission denied (publickey)' not in hardening_pw_probe.stderr"
       when:
         - not ansible_check_mode
+        - hardening_ssh_stage_ran | default(false) | bool
         - not hardening_ssh_password_auth | bool
 
-    - name: Sudo still authenticates through the new PAM stack - disarm the guard
+    # Reaching this task means a new login worked; running it means sudo works too. The
+    # guard must still be armed and must not have fired: if it did, the host was rolled back
+    # under the run and reporting success would be a lie.
+    - name: Sudo still works - disarm the rollback guard
       ansible.builtin.shell: |
+        if [ -e /var/backups/hardening/.rollback-fired ]; then
+          echo "The rollback guard fired during this run. The host was rolled back to its state" >&2
+          echo "before the run. Raise hardening_guard_minutes and run again." >&2
+          exit 1
+        fi
+        if ! systemctl is-active --quiet hardening-rollback.timer; then
+          echo "The rollback guard is not armed although it should be; refusing to report success." >&2
+          exit 1
+        fi
         systemctl stop hardening-rollback.timer
-        ! systemctl is-active --quiet hardening-rollback.timer
       become: true
       changed_when: true
 
@@ -224,11 +339,11 @@
         tasks_from: aide.yml
       when: hardening_aide | default(true) | bool
 
-    # See roles/hardening_extras/tasks/mounts.yml: enabling tmp.mount must be the last thing
-    # before a reboot, and without a reload, or systemd mounts it over the live /tmp.
-    - name: Is a tmpfs /tmp installed but not yet switched on?
+    # See roles/hardening_extras/tasks/mounts.yml: the unit must not exist in systemd's
+    # search path until the moment before a reboot, or systemd mounts it over the live /tmp.
+    - name: Is a tmpfs /tmp staged but not yet switched on?
       ansible.builtin.shell: |
-        if [ -f /etc/systemd/system/tmp.mount ] && ! systemctl is-enabled --quiet tmp.mount 2>/dev/null \
+        if [ -f /var/backups/hardening/tmp.mount.staged ] && [ ! -f /etc/systemd/system/tmp.mount ] \
            && ! findmnt -rn /tmp >/dev/null; then echo pending; fi
       register: hardening_tmp_pending
       changed_when: false
@@ -236,21 +351,25 @@
 
     - name: Switch /tmp to tmpfs at the reboot that follows
       ansible.builtin.shell: |
+        install -m 0644 -o root -g root /var/backups/hardening/tmp.mount.staged /etc/systemd/system/tmp.mount
         systemctl enable --no-reload tmp.mount
         touch /var/run/reboot-required
       changed_when: true
       when:
         - "'pending' in hardening_tmp_pending.stdout"
+        - hardening_tmp_tmpfs | default(false) | bool
         - hardening_allow_reboot | bool
 
     - name: The tmpfs /tmp still needs you
       ansible.builtin.debug:
         msg: >-
-          tmp.mount is installed but not enabled, because enabling it without rebooting would
-          mount an empty tmpfs over the live /tmp. In your maintenance window run:
-          systemctl enable --no-reload tmp.mount && reboot
+          The tmpfs unit for /tmp is staged but not installed, because installing it without
+          rebooting would mount an empty tmpfs over the live /tmp. In your maintenance window run:
+          install -m 0644 /var/backups/hardening/tmp.mount.staged /etc/systemd/system/tmp.mount
+          && systemctl enable --no-reload tmp.mount && reboot
       when:
         - "'pending' in hardening_tmp_pending.stdout"
+        - hardening_tmp_tmpfs | default(false) | bool
         - not hardening_allow_reboot | bool
 
     - name: Is a reboot pending?

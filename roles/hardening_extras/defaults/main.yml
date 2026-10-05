@@ -20,10 +20,11 @@ hardening_remove_packages:               # cleartext-protocol clients (CIS 2.2)
   - nis
 
 # --- kernel modules (CIS 1.1.1, 3.2) --------------------------------------------
-# A module that backs a mounted filesystem is skipped automatically.
+# Skipped automatically, per host: any module that is currently loaded, any module that
+# backs a mounted filesystem, and overlay where a container runtime is installed. A module
+# that is in use is in use for a reason; the audit then reports it for a decision.
 # usb-storage: remove from the list on hosts that are (re)installed or rescued from USB /
 # BMC virtual media.
-# overlay is skipped automatically where Docker, containerd or Podman is installed.
 hardening_disabled_kernel_modules:
   - overlay
   - cramfs
@@ -120,8 +121,8 @@ hardening_audit_immutable: true
 # --- AIDE (CIS 6.3) -----------------------------------------------------------------------
 hardening_aide: true
 # When to rebuild the integrity baseline at the end of a run (it takes minutes):
-#   auto   - only if there is no database yet or files under /etc, /usr, /boot or /opt were
-#            modified since the run started
+#   auto   - only if there is no database yet, or the run changed the content of /etc or
+#            /usr/local, the installed package versions, or the set of setuid files
 #   always - every run        never - leave the database alone
 hardening_aide_reinit: auto
 hardening_aide_excludes:
@@ -132,10 +133,9 @@ hardening_aide_excludes:
   - /var/lib/hardening-audit
 
 # --- host firewall (CIS 4) -------------------------------------------------------------------
-hardening_firewall: true
-hardening_fw_allow:                        # inbound allow list; everything else is dropped
-  - { port: "22", proto: tcp, from: any, comment: "SSH administration" }
-hardening_fw_logging: low
+# hardening_firewall, hardening_fw_allow and hardening_fw_logging are defined in
+# playbooks/group_vars/all/baseline.yml, because the preflight needs them before this role
+# is loaded. The SSH port (hardening_ssh_port) is always allowed, whatever the list says.
 # Ports PUBLISHED by Docker (-p) are DNATed before the INPUT chain and bypass ufw completely.
 # true installs rules in Docker's DOCKER-USER chain so that, from outside the host, only the
 # published ports listed here are reachable. Off by default: on a host that already serves

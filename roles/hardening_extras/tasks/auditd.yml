@@ -90,6 +90,12 @@
 
 # Without audit=1 the processes started before auditd (init, early services) are never
 # auditable; the backlog limit stops events being dropped during the boot burst.
+# Only where GRUB is the boot loader: containers and systemd-boot hosts have no grub.d.
+- name: Check for GRUB
+  ansible.builtin.stat:
+    path: /etc/default/grub.d
+  register: hardening_grub_d
+
 - name: Enable auditing from early boot
   ansible.builtin.copy:
     dest: /etc/default/grub.d/50-hardening-audit.cfg
@@ -99,6 +105,7 @@
     owner: root
     group: root
     mode: "0644"
+  when: hardening_grub_d.stat.exists
   notify: Update grub
 
 - name: Enable auditd

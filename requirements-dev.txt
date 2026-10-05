@@ -1,4 +1,4 @@
-# Linters used by CI (.github/workflows/lint.yml). Not needed to run HardenProof.
+# Linters used by CI (.github/workflows/ci.yml). Not needed to run HardenProof.
 ansible-lint
 yamllint
 shellcheck-py

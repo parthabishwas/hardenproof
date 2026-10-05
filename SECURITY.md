@@ -9,8 +9,9 @@ or leave a host less protected than its report claims. Reports of such defects a
 Please report privately, not in a public issue:
 
 1. Open the repository's **Security** tab and choose **Report a vulnerability** (GitHub
-   private vulnerability reporting).
-2. Include the HardenProof version or commit, the target's Ubuntu release, what you ran, and
+   private vulnerability reporting), or write to <info@parthabishwas.com>.
+2. Include the HardenProof version (`./harden.sh --version`) or commit, the audit script
+   version (first lines of `cis_audit.tsv`), the target's Ubuntu release, what you ran, and
    what happened. The run log under `reports/_logs/` and the relevant rows of `cis_audit.tsv`
    help most; remove host names and addresses you do not want to share.
 

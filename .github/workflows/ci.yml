@@ -23,7 +23,7 @@ jobs:
           ansible-galaxy collection install -r requirements.yml -p ./collections
 
       - name: Shell scripts
-        run: shellcheck -S warning harden.sh audit/cis_audit.sh roles/hardening_extras/files/rollback.sh tests/test_report.sh
+        run: shellcheck -S warning harden.sh audit/cis_audit.sh roles/hardening_extras/files/*.sh tests/*.sh
 
       - name: YAML
         run: yamllint .
@@ -31,7 +31,7 @@ jobs:
       - name: Playbook syntax
         run: |
           for pb in playbooks/audit.yml playbooks/harden.yml playbooks/revert.yml playbooks/bootstrap-access.yml; do
-            HARDEN_BECOME_PASS= ansible-playbook -i inventory/example/hosts.yml --syntax-check "$pb"
+            HARDEN_BECOME_PASS='' ansible-playbook -i inventory/example/hosts.yml --syntax-check "$pb"
           done
 
       - name: Ansible lint
@@ -39,3 +39,6 @@ jobs:
 
       - name: Report generator
         run: tests/test_report.sh
+
+      - name: Wrapper
+        run: tests/test_wrapper.sh

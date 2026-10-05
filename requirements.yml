@@ -1,8 +1,11 @@
 ---
 # Pinned so that a hardening run is reproducible and reviewable.
-# Upgrade deliberately: read the dev-sec changelog, re-run in the lab, re-audit.
+# Upgrade deliberately: read the dev-sec changelog, re-run on test hosts, re-audit.
+# After changing a version: ansible-galaxy collection install -r requirements.yml -p ./collections --force
 collections:
   - name: devsec.hardening
     version: 10.6.0
   - name: ansible.posix
+    version: 2.2.2
   - name: community.general
+    version: 13.4.0

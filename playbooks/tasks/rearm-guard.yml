@@ -1,0 +1,15 @@
+---
+# Each guarded stage gets a full window of its own, so a slow earlier stage (many hosts,
+# package updates) cannot let the timer expire in the middle of a later one. If the guard
+# already fired, stop here: the host has been rolled back and must not be changed further.
+- name: Give this stage a full rollback-guard window
+  ansible.builtin.shell: |
+    if [ -e /var/backups/hardening/.rollback-fired ]; then
+      echo "The rollback guard fired during an earlier stage; this host was rolled back." >&2
+      exit 1
+    fi
+    systemctl stop hardening-rollback.timer 2>/dev/null || true
+    systemctl reset-failed hardening-rollback.service 2>/dev/null || true
+    systemd-run --unit=hardening-rollback --on-active={{ hardening_guard_minutes }}m \
+      --description="Hardening rollback guard" /var/backups/hardening/rollback.sh
+  changed_when: false

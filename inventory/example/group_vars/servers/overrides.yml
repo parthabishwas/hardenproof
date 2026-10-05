@@ -6,7 +6,8 @@
 # Accounts allowed to log in over SSH. MUST include ansible_user or the run refuses to start.
 hardening_ssh_allow_users: [deploy]
 
-# Inbound allow list. Everything else is dropped once the firewall is enabled.
+# Inbound allow list. Everything else is dropped once the firewall is enabled. The SSH port is
+# always allowed. Rules are only ever added: remove a port here AND run `ufw delete allow <port>`.
 hardening_fw_allow:
   - { port: "22", proto: tcp, from: any, comment: "SSH administration" }
   # - { port: "443", proto: tcp, from: any, comment: "HTTPS" }
@@ -15,8 +16,10 @@ hardening_fw_allow:
 # Reboot automatically when a change needs it (kernel command line, /tmp as tmpfs).
 hardening_allow_reboot: false
 
-# Install pending package updates as part of the run. Restarts services; plan a window.
+# Install pending package updates as part of the run. Restarts services; plan a window,
+# and give the stages more time before the rollback guard fires.
 hardening_apply_updates: false
+# hardening_guard_minutes: 45
 
 # cis (default) or pci (90-day password age, 30-minute lockout).
 hardening_profile: cis
@@ -31,6 +34,11 @@ os_ignore_users: []
 
 # Users other than root who own crontabs.
 hardening_cron_allow_users: [root]
+
+# Kernel parameters that must differ on these hosts, with the reason.
+# hardening_sysctl_extra:
+#   net.ipv6.conf.all.accept_ra: 1        # IPv6 address and route come from router advertisements
+#   net.ipv6.conf.default.accept_ra: 1
 
 # Units to stop, disable and mask. Empty on purpose: what is "unneeded" depends on the host.
 hardening_disable_units: []

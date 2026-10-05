@@ -19,6 +19,10 @@
   ansible.builtin.import_tasks: kernel_modules.yml
   tags: [modules]
 
+- name: Per-interface network settings
+  ansible.builtin.import_tasks: interfaces.yml
+  tags: [interfaces]
+
 - name: Mount options
   ansible.builtin.import_tasks: mounts.yml
   tags: [mounts]

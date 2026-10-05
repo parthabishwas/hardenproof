@@ -51,6 +51,28 @@
 - name: Apply PAM changes now
   ansible.builtin.meta: flush_handlers
 
+# "pam-auth-update --package" only switches on profiles it has never seen before. A profile
+# that was removed and comes back (after a revert, or after someone disabled it by hand) is
+# treated as deliberately disabled and stays off, with no error. So the profiles this
+# baseline relies on are enabled explicitly, every run.
+- name: Make sure the password-policy profiles are active
+  ansible.builtin.shell: |
+    set -o pipefail
+    sum() { cat /etc/pam.d/common-auth /etc/pam.d/common-password /etc/pam.d/common-account | md5sum; }
+    want=""
+    for p in pwquality pwhistory faillock faillock_authfail; do
+      [ -f /usr/share/pam-configs/$p ] && want="$want $p"
+    done
+    before=$(sum)
+    # shellcheck disable=SC2086
+    out=$(DEBIAN_FRONTEND=noninteractive pam-auth-update --package --enable $want 2>&1) || {
+      echo "pam-auth-update failed: $out" >&2; exit 1; }
+    [ "$before" = "$(sum)" ] || echo changed
+  args:
+    executable: /bin/bash
+  register: hardening_pam_enable
+  changed_when: "'changed' in hardening_pam_enable.stdout"
+
 - name: Read resulting PAM stack
   ansible.builtin.command: grep -hE '^\s*(auth|password|account)\s' /etc/pam.d/common-auth /etc/pam.d/common-password /etc/pam.d/common-account
   register: hardening_pam_stack
@@ -63,5 +85,11 @@
       - hardening_pam_stack.stdout is search('auth\s.*pam_unix\.so')
       - hardening_pam_stack.stdout is search('password\s.*pam_unix\.so')
       - hardening_pam_stack.stdout is search('account\s.*pam_unix\.so')
-    fail_msg: "pam_unix is missing from the generated stack - do not disarm the rollback guard"
+      - hardening_pam_stack.stdout is search('auth\s.*pam_faillock\.so') or os_auth_retries | int == 0
+      - hardening_pam_stack.stdout is search('password\s.*pam_pwquality\.so')
+      - hardening_pam_stack.stdout is search('password\s.*pam_pwhistory\.so')
+    fail_msg: >-
+      The generated PAM stack is not the expected one (pam_unix, lockout, password quality and
+      history must all be present). pam-auth-update may have refused to regenerate files that
+      were edited by hand; run `pam-auth-update --force` on the host after reviewing them.
   when: not ansible_check_mode

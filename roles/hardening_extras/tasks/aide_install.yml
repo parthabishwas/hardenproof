@@ -1,0 +1,67 @@
+---
+# Runs BEFORE the hardening stages (playbooks/harden.yml, "Packages the later stages rely
+# on"). Installing AIDE can bring in other packages - on Ubuntu 22.04 a mailer with setgid
+# helpers and a daemon. They have to be on the system before dev-sec trims setuid bits and
+# before the audit rules for privileged commands are generated; otherwise the first run
+# leaves work for a second one.
+- name: Note whether a mail transfer agent is already installed
+  ansible.builtin.shell: |
+    set -o pipefail
+    if [ -e /var/backups/hardening/.mta-installed-by-hardening ]; then echo ours
+    elif dpkg-query -W -f='${db:Status-Status}' postfix 2>/dev/null | grep -x installed >/dev/null; then echo present
+    else echo absent; fi
+  args:
+    executable: /bin/bash
+  register: hardening_mta_before
+  changed_when: false
+  check_mode: false
+
+- name: Install AIDE
+  ansible.builtin.apt:
+    name:
+      - aide
+      - aide-common
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    # aide-common Recommends a mailx, which drags in postfix listening on 0.0.0.0:25.
+    # Installing an integrity checker must not add a network service.
+    install_recommends: false
+
+# On Ubuntu 22.04 aide-common DEPENDS on a mailer, so postfix arrives no matter what and
+# listens on every interface. Installing an integrity checker must not add a network
+# service: a postfix that was not there before is restricted to loopback.
+- name: Check whether postfix is installed now
+  ansible.builtin.stat:
+    path: /usr/sbin/postconf
+  register: hardening_postconf
+
+- name: Remember that this playbook brought in the mail transfer agent
+  ansible.builtin.file:
+    path: /var/backups/hardening/.mta-installed-by-hardening
+    state: touch
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when:
+    - hardening_postconf.stat.exists
+    - hardening_mta_before.stdout in ['absent', 'ours']
+
+- name: Read the interfaces postfix listens on
+  ansible.builtin.command: postconf -h inet_interfaces
+  register: hardening_postfix_ifaces
+  changed_when: false
+  failed_when: false      # postfix installed but not configured (no main.cf) is not an error
+  check_mode: false
+  when: hardening_postconf.stat.exists
+
+- name: Restrict postfix to the loopback interface
+  ansible.builtin.shell: |
+    postconf -e 'inet_interfaces = loopback-only'
+    systemctl restart postfix
+  changed_when: true
+  when:
+    - hardening_postconf.stat.exists
+    - hardening_postfix_ifaces.rc | default(1) == 0
+    - hardening_postfix_ifaces.stdout | trim != 'loopback-only'
+    - hardening_mta_before.stdout in ['absent', 'ours'] or hardening_mta_loopback_only | bool

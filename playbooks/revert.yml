@@ -8,10 +8,21 @@
 # copy of /etc taken before the first hardening run on that host
 # (/var/backups/hardening/pristine). Settings HardenProof added as separate files are removed.
 #
+# After an ssh revert, sshd keeps running as an ordinary service (ssh.service). Socket
+# activation is unmasked but not re-enabled: enabling both units would make them compete for
+# the port at the next boot.
+#
 # Not reverted, because there is no safe automatic answer:
 #   * installed packages (auditd, aide, ufw, libpam-pwquality) and removed ones (telnet, ftp)
 #   * password ageing already set on existing accounts (chage -M 99999 <user> to undo)
-#   * permissions tightened on existing log files and home directories
+#   * system accounts (UID 1-999) that were given a nologin shell and a locked password
+#   * permissions tightened on log files, home directories, /boot/grub/grub.cfg, and setuid
+#     bits removed from dev-sec's deny list (ssh-keysign, pppd, mtr ...)
+#   * firewall RULES (the firewall family switches ufw off; it does not delete rules)
+#   * auditd.conf, the AIDE exclusions, a postfix restricted to loopback, the "sugroup"
+#     group, pam_motd removed from /etc/pam.d/sshd, /etc/ssh/moduli, /etc/securetty
+#   * on Ubuntu 22.04 the daily AIDE check is a cron job and keeps running after "aide"
+# The pristine copy of /etc is there for all of these: /var/backups/hardening/pristine/etc.tar.gz
 # A later ./harden.sh apply re-applies everything that is still enabled in the inventory, so
 # also switch the control off there (see "Leaving a control out" in the README).
 
@@ -45,8 +56,18 @@
 
     # ------------------------------------------------------------------ firewall
     - name: Firewall - disable ufw and remove the Docker published-port filter
+      # A firewall that was already on before the first hardening run stays on, with the
+      # rules it had then; otherwise ufw is switched off.
       ansible.builtin.shell: |
-        command -v ufw >/dev/null 2>&1 && ufw --force disable
+        if command -v ufw >/dev/null 2>&1; then
+          if [ "$(cat {{ pristine }}/ufw.before 2>/dev/null)" = active ]; then
+            ufw --force disable
+            tar -xzpf {{ pristine }}/access-critical.tar.gz -C / etc/ufw etc/default/ufw
+            ufw --force enable
+          else
+            ufw --force disable
+          fi
+        fi
         if [ -f /etc/systemd/system/hardening-docker-user.service ]; then
           systemctl disable --now hardening-docker-user.service
           rm -f /etc/systemd/system/hardening-docker-user.service /usr/local/sbin/hardening-docker-user
@@ -58,11 +79,16 @@
 
     # ----------------------------------------------------------------------- ssh
     - name: SSH - restore the original server and client configuration
+      # The old configuration is validated in a scratch directory before it replaces the
+      # running one, so a file sshd would reject never lands in /etc/ssh.
       ansible.builtin.shell: |
         set -e
-        tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/ssh/sshd_config etc/ssh/ssh_config
+        t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+        tar -xzpf {{ pristine }}/etc.tar.gz -C "$t" etc/ssh/sshd_config etc/ssh/ssh_config
+        sshd -t -f "$t/etc/ssh/sshd_config"
+        install -m 0644 -o root -g root "$t/etc/ssh/sshd_config" /etc/ssh/sshd_config
+        install -m 0644 -o root -g root "$t/etc/ssh/ssh_config" /etc/ssh/ssh_config
         rm -f /etc/ssh/revoked_keys
-        sshd -t
         systemctl unmask ssh.socket 2>/dev/null || true
         systemctl restart ssh.service
       changed_when: true
@@ -70,13 +96,23 @@
 
     # ----------------------------------------------------------------------- pam
     - name: PAM - remove password quality, history and lockout
+      # Done through pam-auth-update, not by copying old common-* files back: "--remove"
+      # also forgets the profile, so a later apply enables it again. pam_pwquality itself
+      # stays (its package is still installed) but goes back to the distribution defaults.
       ansible.builtin.shell: |
         set -e
-        rm -f /usr/share/pam-configs/pwhistory /usr/share/pam-configs/faillock /usr/share/pam-configs/faillock_authfail \
-              /etc/security/pwquality.conf.d/50-hardening.conf
+        export DEBIAN_FRONTEND=noninteractive
+        for p in pwhistory faillock faillock_authfail; do
+          if [ -f /usr/share/pam-configs/$p ]; then
+            pam-auth-update --package --remove $p >/dev/null 2>&1
+            rm -f /usr/share/pam-configs/$p
+          fi
+        done
+        rm -f /etc/security/pwquality.conf.d/50-hardening.conf
         tar -xzpf {{ pristine }}/access-critical.tar.gz -C / usr/share/pam-configs/unix
-        tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/pam.d/common-auth etc/pam.d/common-account \
-            etc/pam.d/common-password etc/pam.d/common-session etc/security/faillock.conf
+        tar -xzpf {{ pristine }}/etc.tar.gz -C / etc/security/faillock.conf
+        pam-auth-update --package >/dev/null 2>&1
+        grep -q pam_unix.so /etc/pam.d/common-auth
       changed_when: true
       tags: [never, pam]
 
@@ -111,7 +147,7 @@
     # -------------------------------------------------------------------- sysctl
     - name: Kernel and network parameters - remove the hardened values
       ansible.builtin.shell: |
-        rm -f /etc/sysctl.d/90-dev-sec.conf
+        rm -f /etc/sysctl.d/90-dev-sec.conf /etc/sysctl.d/91-hardening-interfaces.conf
         sysctl --system >/dev/null
         touch /var/run/reboot-required
       changed_when: true
@@ -130,7 +166,8 @@
     # -------------------------------------------------------------------- mounts
     - name: Mounts - remove the hardened mount options
       ansible.builtin.shell: |
-        rm -rf /etc/systemd/system/tmp.mount.d/50-hardening.conf /etc/apt/apt.conf.d/90hardening-tmp-noexec
+        rm -rf /etc/systemd/system/tmp.mount.d/50-hardening.conf /etc/apt/apt.conf.d/90hardening-tmp-noexec \
+               /var/backups/hardening/tmp.mount.staged
         if grep -qs 'Managed by Ansible (hardening_extras)' /etc/systemd/system/tmp.mount; then
           systemctl disable tmp.mount; rm -f /etc/systemd/system/tmp.mount
         fi
@@ -161,7 +198,10 @@
     # ---------------------------------------------------------------------- cron
     - name: Cron - restore default permissions and remove the allow-lists
       ansible.builtin.shell: |
+        # With neither file present cron allows everyone but at allows root only.
+        # An empty at.deny gives at back its distribution behaviour.
         rm -f /etc/cron.allow /etc/at.allow
+        if command -v at >/dev/null 2>&1; then : > /etc/at.deny; chown root:daemon /etc/at.deny 2>/dev/null || true; chmod 640 /etc/at.deny; fi
         chmod 644 /etc/crontab
         chmod 755 /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly
       changed_when: true

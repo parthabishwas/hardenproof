@@ -1,5 +1,13 @@
 ## Managed by Ansible (hardening_extras). Rule families follow CIS Ubuntu LTS section 6.2.
 {% set present = hardening_audit_watch_stat.results | selectattr('stat.exists') | map(attribute='item') | list %}
+{# The 64-bit ARM syscall table has no open, creat, chmod, chown, lchown, rename or unlink:
+   only the *at variants exist there, and a rule naming a missing syscall makes the whole
+   rule set fail to load. 32-bit compatibility rules are emitted on x86-64 only. #}
+{% set arm = ansible_facts.architecture | default('x86_64') in ['aarch64', 'arm64'] %}
+{% set sc_open = 'openat,truncate,ftruncate' if arm else 'creat,open,openat,truncate,ftruncate' %}
+{% set sc_chmod = 'fchmod,fchmodat' if arm else 'chmod,fchmod,fchmodat' %}
+{% set sc_chown = 'fchown,fchownat' if arm else 'chown,fchown,lchown,fchownat' %}
+{% set sc_delete = 'unlinkat,renameat' if arm else 'rename,unlink,unlinkat,renameat' %}
 {% macro watch(path, key) %}
 {% if path in present %}
 -w {{ path }} -p wa -k {{ key }}
@@ -15,30 +23,38 @@
 
 ## Commands run as another user (sudo, su, setuid)
 -a always,exit -F arch=b64 -C euid!=uid -F auid!=unset -S execve -k user_emulation
+{% if not arm %}
 -a always,exit -F arch=b32 -C euid!=uid -F auid!=unset -S execve -k user_emulation
+{% endif %}
 {% if not hardening_sudo_rs %}
 {{ watch(hardening_sudo_logfile, 'sudo_log_file') -}}
 {% endif %}
 
 ## Date and time
 -a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
--a always,exit -F arch=b32 -S adjtimex,settimeofday -k time-change
 -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
+{% if not arm %}
+-a always,exit -F arch=b32 -S adjtimex,settimeofday -k time-change
 -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
+{% endif %}
 {{ watch('/etc/localtime', 'time-change') -}}
 
 ## Network environment
 -a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
+{% if not arm %}
 -a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
+{% endif %}
 {% for p in ['/etc/issue', '/etc/issue.net', '/etc/hosts', '/etc/hostname', '/etc/networks', '/etc/network', '/etc/netplan'] %}
 {{ watch(p, 'system-locale') -}}
 {% endfor %}
 
 ## Unsuccessful file access
--a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
--a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+-a always,exit -F arch=b64 -S {{ sc_open }} -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
+-a always,exit -F arch=b64 -S {{ sc_open }} -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+{% if not arm %}
 -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
 -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+{% endif %}
 
 ## Identity and authentication configuration
 {% for p in ['/etc/group', '/etc/passwd', '/etc/gshadow', '/etc/shadow', '/etc/security/opasswd', '/etc/nsswitch.conf', '/etc/pam.conf', '/etc/pam.d'] %}
@@ -48,16 +64,20 @@
 {{ watch('/etc/audit', 'audit_config') -}}
 
 ## Discretionary access control changes
--a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
--a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S {{ sc_chmod }} -F auid>=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S {{ sc_chown }} -F auid>=1000 -F auid!=unset -k perm_mod
 -a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
+{% if not arm %}
 -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
 -a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
 -a always,exit -F arch=b32 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
+{% endif %}
 
 ## Mounts
 -a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=unset -k mounts
+{% if not arm %}
 -a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=unset -k mounts
+{% endif %}
 
 ## Sessions and logins
 {% for p in ['/run/utmp', '/var/log/wtmp', '/var/log/btmp'] %}
@@ -68,8 +88,10 @@
 {% endfor %}
 
 ## File deletion by users
--a always,exit -F arch=b64 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
+-a always,exit -F arch=b64 -S {{ sc_delete }} -F auid>=1000 -F auid!=unset -k delete
+{% if not arm %}
 -a always,exit -F arch=b32 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
+{% endif %}
 
 ## Mandatory access control policy
 {{ watch('/etc/apparmor', 'MAC-policy') -}}

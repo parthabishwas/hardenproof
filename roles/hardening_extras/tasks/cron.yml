@@ -5,7 +5,8 @@
     dest: /etc/cron.allow
     content: "{{ hardening_cron_allow_users | join('\n') }}\n"
     owner: root
-    group: root
+    # Ubuntu's crontab is setgid crontab, not setuid root: it must be able to read this file
+    group: crontab
     mode: "0640"
 
 - name: Remove cron.deny (allow-list takes over)

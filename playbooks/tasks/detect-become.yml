@@ -1,6 +1,6 @@
 ---
 # Ubuntu 25.10 and later ship sudo-rs as /usr/bin/sudo. Its password prompt is rendered as
-# "[sudo: <prompt>] Password:", which ansible-core (tested: 2.19 and 2.21) does not
+# "[sudo: <prompt>] Password:", which ansible-core (tested with 2.19) does not
 # recognise, so privilege escalation times out. The classic sudo is still installed as
 # sudo.ws and reads the same /etc/sudoers, so automation uses that where it exists.
 # Set ansible_become_exe yourself in the inventory to override this detection.

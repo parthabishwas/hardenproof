@@ -16,7 +16,7 @@
 
 set -u
 export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin
-VERSION=1.2.1
+VERSION=1.3.0
 
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 2; }
 # The checks are written for Ubuntu (dpkg, apt, AppArmor, ufw, pam-auth-update). On any other
@@ -30,16 +30,23 @@ fi
 # ---------------------------------------------------------------- helpers ---
 rec() { # id cis level group status title evidence
   local ev=${7:-}
-  ev=${ev//$'\t'/ }; ev=${ev//$'\n'/; }
+  ev=${ev//$'\t'/ }; ev=${ev//$'\n'/; }; ev=${ev//$'\r'/ }
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "${ev:0:400}"
 }
 has() { command -v "$1" >/dev/null 2>&1; }
-pkg_installed() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null | grep -qx installed; }
+# one status per line: a package installed for two architectures prints two of them
+pkg_installed() { dpkg-query -W -f='${db:Status-Status}\n' "$1" 2>/dev/null | grep -qx installed; }
+# "in use": enabled OR running - the right question for services that should be absent
 unit_on() { systemctl is-enabled "$1" 2>/dev/null | grep -qE '^(enabled|static|alias|generated)' || systemctl is-active --quiet "$1" 2>/dev/null; }
+# "working": enabled AND running - the right question for services that must be there
+unit_working() { systemctl is-enabled "$1" 2>/dev/null | grep -qE '^(enabled|static|alias|generated)' && systemctl is-active --quiet "$1" 2>/dev/null; }
 
-HAS_DOCKER=0; { has dockerd || pkg_installed docker-ce || pkg_installed docker.io; } && HAS_DOCKER=1
+HAS_DOCKER=0; { has dockerd || pkg_installed docker-ce || pkg_installed docker.io || [ -x /snap/bin/docker ]; } && HAS_DOCKER=1
+# any container runtime needs overlayfs
+HAS_CONTAINERS=$HAS_DOCKER; { has containerd || has podman || has crio || has k3s || has nerdctl; } && HAS_CONTAINERS=1
 # Local filesystems only; never descend into vboxsf/NFS/docker layers or pseudo filesystems.
-LOCAL_FS=$(findmnt -rn -o TARGET -t ext2,ext3,ext4,xfs,btrfs,zfs,f2fs | grep -vE '^/var/lib/(docker|containerd)' )
+# The root filesystem is always scanned, whatever its type.
+LOCAL_FS=$( { echo /; findmnt -rn -o TARGET -t ext2,ext3,ext4,xfs,btrfs,zfs,f2fs; } | grep -vE '^/var/lib/(docker|containerd)' | sort -u )
 lfind() { local m; for m in $LOCAL_FS; do find "$m" -xdev \( -path /var/lib/docker -o -path /var/lib/containerd -o -path /snap \) -prune -o "$@" -print 2>/dev/null; done; }
 
 # kernel module must be: not loaded, install -> /bin/true|false, blacklisted (or absent from kernel)
@@ -98,7 +105,8 @@ chk_svc_off() { # id cis level group title pkg unit...
 
 chk_mnt() { # id cis level group mountpoint option
   local id=$1 cis=$2 lvl=$3 grp=$4 mp=$5 opt=$6 t="$5 is mounted with $6"
-  local o; o=$(findmnt -rn -o OPTIONS "$mp" 2>/dev/null | head -1)
+  # stacked mounts (automount, over-mounts): the last entry is the one in effect
+  local o; o=$(findmnt -rn -o OPTIONS "$mp" 2>/dev/null | tail -1)
   if [ -z "$o" ]; then rec "$id" "$cis" "$lvl" "$grp" NA "$t" "$mp is not a separate mount"; return; fi
   if [[ ",$o," == *",$opt,"* ]]; then rec "$id" "$cis" "$lvl" "$grp" PASS "$t" "$o"; else rec "$id" "$cis" "$lvl" "$grp" FAIL "$t" "$o"; fi
 }
@@ -108,7 +116,11 @@ chk_part() { # id cis level group mountpoint
   else rec "$1" "$2" "$3" "$4" FAIL "$t" "lives on the root filesystem"; fi
 }
 
-SSHD_T=$(sshd -T -C user=root -C host=localhost -C addr=127.0.0.1 2>/dev/null)
+# The effective configuration as seen by a REMOTE connection (a documentation address, so
+# that a "Match Address 127.0.0.1" block does not decide the result). Match blocks for other
+# users or networks are reported separately (SSH-25), because no single evaluation sees them.
+SSHD_ERR=$(sshd -T -C user=root -C host=audit.invalid -C addr=203.0.113.1 2>&1 >/dev/null | head -2 | tr '\n' ' ')
+SSHD_T=$(sshd -T -C user=root -C host=audit.invalid -C addr=203.0.113.1 2>/dev/null)
 sshd_val() { awk -v k="$1" '$1==k{$1="";sub(/^ /,"");print;exit}' <<<"$SSHD_T"; }
 chk_sshd() { # id level key regex title   (regex matched against effective lowercase value)
   local id=$1 lvl=$2 k=$3 re=$4 t=$5 v; v=$(sshd_val "$k")
@@ -119,8 +131,16 @@ chk_sshd_num() { # id level key min max title
   if [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge "$min" ] && [ "$v" -le "$max" ]; then rec "$id" 5.1 "$lvl" SSH PASS "$t" "$k $v"; else rec "$id" 5.1 "$lvl" SSH FAIL "$t" "$k ${v:-<unset>} (want $min..$max)"; fi
 }
 # effective value of a "key = value" setting across a main file and its drop-in dir (last wins)
-conf_val() { # key file dropin-dir
-  cat "$2" "$3"/*.conf 2>/dev/null | grep -E "^\s*$1\s*=" | tail -1 | sed 's/^[^=]*=\s*//;s/\s*$//'
+# effective value of a "key = value" setting; the files are given in the order the consumer
+# reads them, the last assignment wins
+conf_val() { # key file...
+  local k=$1; shift
+  cat "$@" 2>/dev/null | grep -E "^\s*$k\s*=" | tail -1 | sed 's/^[^=]*=\s*//;s/\s*$//'
+}
+# an argument given on a PAM module line overrides the module's configuration file
+pam_arg() { # module argument file...
+  local m=$1 a=$2; shift 2
+  grep -hE "^\s*[^#].*$m" "$@" 2>/dev/null | grep -oE "\b$a=[^ ]+" | tail -1 | cut -d= -f2
 }
 
 # ------------------------------------------------------------------- meta ---
@@ -139,7 +159,7 @@ chk_mod FS-02 1.1.1 L1 FS-MOD freevxfs
 chk_mod FS-03 1.1.1 L1 FS-MOD hfs
 chk_mod FS-04 1.1.1 L1 FS-MOD hfsplus
 chk_mod FS-05 1.1.1 L1 FS-MOD jffs2
-if [ $HAS_DOCKER -eq 1 ]; then rec FS-06 1.1.1 L2 FS-MOD NA "Kernel module 'overlayfs' is disabled" "Docker (overlay2 storage driver) requires overlayfs - documented exception"
+if [ $HAS_CONTAINERS -eq 1 ]; then rec FS-06 1.1.1 L2 FS-MOD NA "Kernel module 'overlayfs' is disabled" "a container runtime is installed and requires overlayfs - documented exception"
 else chk_mod FS-06 1.1.1 L2 FS-MOD overlay; fi
 if pkg_installed snapd && [ -n "$(ls /snap/*/current 2>/dev/null)" ]; then rec FS-07 1.1.1 L2 FS-MOD NA "Kernel module 'squashfs' is disabled" "snap packages are installed and need squashfs"
 else chk_mod FS-07 1.1.1 L2 FS-MOD squashfs; fi
@@ -163,8 +183,10 @@ chk_part FS-22 1.1.2 L2 FS-PART /var/log/audit
 for o in nodev nosuid noexec; do chk_mnt "FS-23-$o" 1.1.2 L1 FS-PART /var/log/audit $o; done
 
 # 1.2 package management
-n_up=$(apt list --upgradable 2>/dev/null | grep -c '/')
-n_sec=$(apt list --upgradable 2>/dev/null | grep -c -- '-security')
+# what "apt-get upgrade" would install now: phased updates that apt deliberately holds back
+# are not counted as missing patches
+UPG=$(apt-get -s upgrade 2>/dev/null | grep '^Inst ')
+n_up=$(grep -c . <<<"$UPG"); n_sec=$(grep -c -- '-security' <<<"$UPG")
 # "nothing to upgrade" is only meaningful against a fresh package index
 idx_ts=$(stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || find /var/lib/apt/lists -maxdepth 1 -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
 idx_age=$(( ( $(date +%s) - ${idx_ts:-0} ) / 86400 ))
@@ -186,9 +208,10 @@ else rec MAC-02 1.3.1 L1 MAC FAIL "AppArmor is enabled at boot" "lsm=$(cat /sys/
 aa=$(apparmor_status 2>/dev/null)
 aa_loaded=$(awk '/profiles are loaded/{print $1}' <<<"$aa"); aa_enf=$(awk '/profiles are in enforce mode/{print $1}' <<<"$aa")
 aa_compl=$(awk '/profiles are in complain mode/{print $1}' <<<"$aa"); aa_unconf=$(awk '/processes are unconfined but have a profile/{print $1}' <<<"$aa")
-ev="loaded=$aa_loaded enforce=$aa_enf complain=$aa_compl unconfined_with_profile=$aa_unconf"
-if [ "${aa_loaded:-0}" -gt 0 ] && [ "${aa_unconf:-0}" -eq 0 ]; then rec MAC-03 1.3.1 L1 MAC PASS "All AppArmor profiles are in enforce or complain mode" "$ev"; else rec MAC-03 1.3.1 L1 MAC FAIL "All AppArmor profiles are in enforce or complain mode" "$ev"; fi
-if [ "${aa_loaded:-0}" -gt 0 ] && [ "${aa_compl:-0}" -eq 0 ] && [ "${aa_unconf:-0}" -eq 0 ]; then rec MAC-04 1.3.1 L2 MAC PASS "All AppArmor profiles are enforcing" "$ev"; else rec MAC-04 1.3.1 L2 MAC FAIL "All AppArmor profiles are enforcing" "$ev"; fi
+aa_other=$(( ${aa_loaded:-0} - ${aa_enf:-0} - ${aa_compl:-0} ))
+ev="loaded=$aa_loaded enforce=$aa_enf complain=$aa_compl other_modes(unconfined/kill/prompt)=$aa_other processes_unconfined_with_profile=$aa_unconf"
+if [ "${aa_loaded:-0}" -gt 0 ] && [ "${aa_unconf:-0}" -eq 0 ]; then rec MAC-03 1.3.1 L1 MAC PASS "AppArmor profiles are loaded and no process with a profile runs unconfined" "$ev"; else rec MAC-03 1.3.1 L1 MAC FAIL "AppArmor profiles are loaded and no process with a profile runs unconfined" "$ev"; fi
+if [ "${aa_loaded:-0}" -gt 0 ] && [ "${aa_compl:-0}" -eq 0 ] && [ "${aa_unconf:-0}" -eq 0 ]; then rec MAC-04 1.3.1 L2 MAC PASS "No AppArmor profile is in complain mode" "$ev"; else rec MAC-04 1.3.1 L2 MAC FAIL "No AppArmor profile is in complain mode" "$ev"; fi
 
 # 1.4 bootloader
 if grep -qE '^\s*set superusers' /boot/grub/grub.cfg 2>/dev/null && grep -qE '^\s*password_pbkdf2' /boot/grub/grub.cfg; then rec BOOT-01 1.4 L1 BOOT PASS "Bootloader password is set" "superusers + password_pbkdf2 present"
@@ -210,7 +233,9 @@ chk_sysctl PROC-06 1.5 X PROC kernel.kptr_restrict 2 "Kernel pointers are hidden
 chk_sysctl PROC-07 1.5 X PROC kernel.dmesg_restrict 1 "dmesg is restricted to privileged users"
 chk_sysctl PROC-08 1.5 X PROC fs.protected_hardlinks 1 "Hardlink protection is enabled"
 chk_sysctl PROC-09 1.5 X PROC fs.protected_symlinks 1 "Symlink protection is enabled"
-chk_sysctl PROC-10 1.5 X PROC kernel.unprivileged_bpf_disabled 1 "Unprivileged eBPF is disabled"
+bpf=$(sysctl -n kernel.unprivileged_bpf_disabled 2>/dev/null)
+case ${bpf:-0} in 1|2) rec PROC-10 1.5 X PROC PASS "Unprivileged eBPF is disabled" "kernel.unprivileged_bpf_disabled=$bpf" ;;
+  *) rec PROC-10 1.5 X PROC FAIL "Unprivileged eBPF is disabled" "kernel.unprivileged_bpf_disabled=${bpf:-unset}" ;; esac
 if unit_on kdump-tools.service; then rec PROC-11 1.5 X PROC FAIL "kdump (kernel crash dumps) is not enabled without a need" "kdump-tools enabled; crashkernel memory reserved and full-RAM dumps written to disk"
 else rec PROC-11 1.5 X PROC PASS "kdump (kernel crash dumps) is not enabled without a need" "kdump-tools not enabled"; fi
 
@@ -275,7 +300,7 @@ if [[ "$td" == *chrony* ]]; then
 fi
 
 # 2.4 cron
-if unit_on cron.service; then rec CRON-01 2.4 L1 CRON PASS "cron daemon is enabled and active" ""; else rec CRON-01 2.4 L1 CRON FAIL "cron daemon is enabled and active" ""; fi
+if unit_working cron.service; then rec CRON-01 2.4 L1 CRON PASS "cron daemon is enabled and active" ""; else rec CRON-01 2.4 L1 CRON FAIL "cron daemon is enabled and active" ""; fi
 chk_perm CRON-02 2.4 L1 CRON /etc/crontab 600 root root
 i=3; for d in /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly /etc/cron.d; do chk_perm "CRON-0$i" 2.4 L1 CRON $d 700 root root; i=$((i+1)); done
 if [ -f /etc/cron.allow ] && [ ! -f /etc/cron.deny ]; then chk_perm CRON-08 2.4 L1 CRON /etc/cron.allow 640 root 'root|crontab' "crontab is restricted to authorized users (cron.allow)"
@@ -313,14 +338,30 @@ for kv in net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirect
   chk_sysctl "NET-$i" 3.3 L1 NET-SYSCTL "${kv%=*}" "${kv#*=}"; i=$((i+1))
 done
 
+# "all" and "default" are not the whole story: an interface that existed before the setting
+# was applied keeps its own value, and for redirects the kernel uses all OR interface.
+ifbad=""
+for k in accept_redirects secure_redirects send_redirects accept_source_route; do
+  for f in /proc/sys/net/ipv4/conf/*/$k; do d=${f%/*}; d=${d##*/}
+    case $d in all|default|lo) continue ;; esac; [ "$(cat "$f" 2>/dev/null)" = 0 ] || ifbad+="$d.$k(v4) "; done
+done
+for k in accept_redirects accept_source_route accept_ra; do
+  for f in /proc/sys/net/ipv6/conf/*/$k; do [ -e "$f" ] || continue; d=${f%/*}; d=${d##*/}
+    case $d in all|default|lo) continue ;; esac; [ "$(cat "$f" 2>/dev/null)" = 0 ] || ifbad+="$d.$k(v6) "; done
+done
+[ -z "$ifbad" ] && rec NET-33 3.3 X NET-SYSCTL PASS "No interface overrides the redirect, source-route and RA settings" "" || rec NET-33 3.3 X NET-SYSCTL FAIL "No interface overrides the redirect, source-route and RA settings" "$ifbad"
+
 # ============================================================ 4 Firewall ====
 fw=""; ufw_active=0
 if has ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then fw+="ufw "; ufw_active=1; fi
 systemctl is-active --quiet firewalld 2>/dev/null && fw+="firewalld "
-nft_input=$(nft list ruleset 2>/dev/null | grep -E 'hook input' | grep -v 'ufw' | head -3)
-[ $ufw_active -eq 0 ] && [ -n "$nft_input" ] && fw+="nftables "
+# An input-hooked chain that drops by default is a firewall; an empty accept-all chain left
+# behind by iptables-nft or a disabled ufw is not.
+NFT=""; lsmod | grep -q '^nf_tables' && NFT=$(nft list ruleset 2>/dev/null)
+nft_input=$(grep -E 'hook input' <<<"$NFT" | grep -E 'policy drop' | head -3)
+[ $ufw_active -eq 0 ] && ! systemctl is-active --quiet firewalld 2>/dev/null && [ -n "$nft_input" ] && fw+="nftables "
 if [ "$(wc -w <<<"$fw")" -eq 1 ]; then rec FW-01 4 L1 FW PASS "A single host firewall is in use" "$fw"; else rec FW-01 4 L1 FW FAIL "A single host firewall is in use" "active: ${fw:-none}"; fi
-in_pol=$(nft list ruleset 2>/dev/null | grep -E 'hook input' | grep -oE 'policy (accept|drop)' | sort -u | tr '\n' ' ')
+in_pol=$(grep -E 'hook input' <<<"$NFT" | grep -oE 'policy (accept|drop)' | sort -u | tr '\n' ' ')
 if [ $ufw_active -eq 1 ]; then
   ud=$(ufw status verbose | awk -F: '/^Default/{print $2}')
   [[ "$ud" == *"deny (incoming)"* || "$ud" == *"reject (incoming)"* ]] && rec FW-02 4 L1 FW PASS "Default inbound policy is deny" "$ud" || rec FW-02 4 L1 FW FAIL "Default inbound policy is deny" "$ud"
@@ -331,14 +372,22 @@ if [ $ufw_active -eq 1 ]; then
   [ "$lo" -ge 1 ] && rec FW-05 4 L1 FW PASS "Loopback traffic is configured" "ufw-before-input accepts lo" || rec FW-05 4 L1 FW FAIL "Loopback traffic is configured" "no lo accept rule"
 else
   if [[ -n "$in_pol" && "$in_pol" != *accept* ]]; then rec FW-02 4 L1 FW PASS "Default inbound policy is deny" "nft input: $in_pol"; else rec FW-02 4 L1 FW FAIL "Default inbound policy is deny" "nft input hooks: ${in_pol:-none (all inbound traffic accepted)}"; fi
-  fp=$(nft list ruleset 2>/dev/null | grep -E 'hook forward' | grep -oE 'policy (accept|drop)' | sort -u | tr '\n' ' ')
+  fp=$(grep -E 'hook forward' <<<"$NFT" | grep -oE 'policy (accept|drop)' | sort -u | tr '\n' ' ')
   [[ -n "$fp" && "$fp" != *accept* ]] && rec FW-03 4 L1 FW PASS "Default routed/forward policy is deny" "nft forward: $fp" || rec FW-03 4 L1 FW FAIL "Default routed/forward policy is deny" "nft forward hooks: ${fp:-none}"
-  rec FW-04 4 L1 FW FAIL "Firewall rules exist only for approved open ports" "no host firewall ruleset for inbound traffic"
-  rec FW-05 4 L1 FW FAIL "Loopback traffic is configured" "no host firewall"
+  if [ -n "$fw" ]; then
+    # a firewall other than ufw: the rule set is for a person to read
+    rec FW-04 4 L1 FW MANUAL "Firewall rules exist only for approved open ports" "$fw is active; review its rule set"
+    if grep -qE 'iif(name)? "?lo"? accept' <<<"$NFT"; then rec FW-05 4 L1 FW PASS "Loopback traffic is configured" "loopback accept rule present"
+    else rec FW-05 4 L1 FW MANUAL "Loopback traffic is configured" "$fw is active; no explicit loopback accept rule found in the nft rule set"; fi
+  else
+    rec FW-04 4 L1 FW FAIL "Firewall rules exist only for approved open ports" "no host firewall ruleset for inbound traffic"
+    rec FW-05 4 L1 FW FAIL "Loopback traffic is configured" "no host firewall"
+  fi
 fi
 if [ $HAS_DOCKER -eq 1 ]; then
   pubs=$(docker ps --format '{{.Ports}}' 2>/dev/null | tr '\n' ' ' | head -c 150)
-  if iptables -S DOCKER-USER 2>/dev/null | tail -1 | grep -qE -- '-j DROP$'; then
+  # the chain must END in an unconditional drop; a drop for one port or interface is not a default
+  if iptables -S DOCKER-USER 2>/dev/null | tail -1 | grep -qE -- '^-A DOCKER-USER -j DROP$'; then
     allowed=$(iptables -S DOCKER-USER 2>/dev/null | grep -oE 'ctorigdstport [0-9]+' | awk '{print $2}' | sort -un | tr '\n' ' ')
     rec FW-06 4 X FW PASS "Docker published ports are filtered (DOCKER-USER chain)" "default drop; allowed from outside: ${allowed:-none}; published: ${pubs:-none}"
   else
@@ -348,6 +397,15 @@ fi
 
 # ====================================================== 5 Access control ====
 # 5.1 SSH server
+if [ -z "$SSHD_T" ]; then
+  # No effective configuration could be read. Without this branch every "no weak cipher"
+  # style check below would pass on an empty list.
+  if has sshd; then st=FAIL; why="sshd -T produced no output: ${SSHD_ERR:-unknown error}"; else st=NA; why="no SSH server installed"; fi
+  for n in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22; do rec "SSH-$n" 5.1 L1 SSH $st "SSH server setting (see evidence)" "$why"; done
+  rec SSH-23 5.1 X SSH $st "SSH password authentication is disabled (keys only)" "$why"
+  rec SSH-24 5.1 X SSH $st "authorized_keys entries are known and approved" "$why"
+  rec SSH-25 5.1 X SSH $st "No Match block overrides the audited SSH settings" "$why"
+else
 chk_perm SSH-01 5.1 L1 SSH /etc/ssh/sshd_config 600 root root
 bad=$(find /etc/ssh -xdev -type f -name 'ssh_host_*_key' \( -perm /077 -o ! -user root \) 2>/dev/null | tr '\n' ' ')
 [ -z "$bad" ] && rec SSH-02 5.1 L1 SSH PASS "SSH private host keys are 0600 root" "" || rec SSH-02 5.1 L1 SSH FAIL "SSH private host keys are 0600 root" "$bad"
@@ -375,19 +433,46 @@ m=$(sshd_val macs); weak=$(tr ',' '\n' <<<"$m" | grep -E 'md5|ripemd|sha1|umac-6
 chk_sshd_num SSH-16 L1 maxauthtries 1 4 "SSH MaxAuthTries is 4 or less"
 chk_sshd_num SSH-17 L1 maxsessions 1 10 "SSH MaxSessions is 10 or less"
 ms=$(sshd_val maxstartups); IFS=: read -r a b c3 <<<"$ms"
+# "MaxStartups 10" (one number) is a hard limit of 10, stricter than 10:30:60
+[ -n "$a" ] && [ -z "$b" ] && { b=0; c3=$a; }
 if [ "${a:-99}" -le 10 ] && [ "${b:-99}" -le 30 ] && [ "${c3:-999}" -le 60 ]; then rec SSH-18 5.1 L1 SSH PASS "SSH MaxStartups is 10:30:60 or stricter" "$ms"; else rec SSH-18 5.1 L1 SSH FAIL "SSH MaxStartups is 10:30:60 or stricter" "$ms"; fi
 chk_sshd SSH-19 L1 permitemptypasswords no "SSH PermitEmptyPasswords is disabled"
 chk_sshd SSH-20 L1 permitrootlogin no "SSH root login is disabled"
 chk_sshd SSH-21 L1 permituserenvironment no "SSH PermitUserEnvironment is disabled"
 chk_sshd SSH-22 L1 usepam yes "SSH UsePAM is enabled"
 chk_sshd SSH-23 X passwordauthentication no "SSH password authentication is disabled (keys only)"
-nkeys=$(cat /home/*/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null | grep -cE '^(ssh-|ecdsa-|sk-)')
+# every non-comment line is a key, including those that start with options (from=, command=)
+nkeys=$(awk -F: '{print $6}' /etc/passwd | sort -u | while read -r h; do cat "$h/.ssh/authorized_keys" "$h/.ssh/authorized_keys2" 2>/dev/null; done | grep -cvE '^\s*(#|$)')
 rec SSH-24 5.1 X SSH MANUAL "authorized_keys entries are known and approved" "$nkeys key(s) across all users"
+# Match blocks apply other values to some users, groups or source networks; the checks above
+# only see the configuration for one sample connection.
+SSHD_FILES=$( { echo /etc/ssh/sshd_config
+  grep -hiE '^\s*Include\s' /etc/ssh/sshd_config 2>/dev/null | awk '{for(i=2;i<=NF;i++)print $i}' | while read -r g; do
+    case $g in /*) ;; *) g=/etc/ssh/$g ;; esac
+    # shellcheck disable=SC2086
+    ls $g 2>/dev/null
+  done; } )
+# A Match block is a finding only when it sets one of the audited settings to a weaker value;
+# blocks that add restrictions (ForceCommand, ChrootDirectory, "AllowTcpForwarding no") are fine.
+# shellcheck disable=SC2086
+match=$(cat $SSHD_FILES 2>/dev/null | awk '
+  BEGIN { split("passwordauthentication=no permitrootlogin=no allowtcpforwarding=no x11forwarding=no allowagentforwarding=no permitemptypasswords=no permituserenvironment=no hostbasedauthentication=no gssapiauthentication=no kbdinteractiveauthentication=no permittunnel=no gatewayports=no ignorerhosts=yes disableforwarding=yes usepam=yes", a, " ");
+          for (i in a) { split(a[i], kv, "="); safe[kv[1]] = kv[2] }
+          split("maxauthtries maxsessions authenticationmethods allowusers allowgroups denyusers denygroups pubkeyauthentication", b, " "); for (i in b) review[b[i]] = 1 }
+  tolower($1) == "match" { m = 1; hdr = $0; next }
+  m && $1 !~ /^#/ && NF { k = tolower($1); v = tolower($2)
+    if ((k in safe && v != safe[k]) || (k in review)) printf "[%s] %s %s; ", hdr, $1, $2 }')
+nmatch=$(cat $SSHD_FILES 2>/dev/null | grep -ciE '^\s*match\s')
+if [ -z "$match" ]; then rec SSH-25 5.1 X SSH PASS "No Match block overrides the audited SSH settings" "$nmatch Match block(s), none weakens an audited setting"
+else rec SSH-25 5.1 X SSH MANUAL "No Match block overrides the audited SSH settings" "these apply to some users or networks only and are not covered by the checks above: $match"; fi
+fi
 
 # 5.2 privilege escalation
 pkg_installed sudo && rec SUDO-01 5.2 L1 SUDO PASS "sudo is installed" "" || rec SUDO-01 5.2 L1 SUDO FAIL "sudo is installed" ""
-SUDOERS=$(cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -vE '^\s*#($|[^i])')
-grep -qE '^\s*Defaults\s+.*\buse_pty\b' <<<"$SUDOERS" && rec SUDO-02 5.2 L1 SUDO PASS "sudo commands use a pty" "" || rec SUDO-02 5.2 L1 SUDO FAIL "sudo commands use a pty" "no Defaults use_pty"
+# sudo ignores files in sudoers.d whose name contains a dot or ends in ~; so does this audit
+SUDOERS=$( { cat /etc/sudoers; find /etc/sudoers.d -maxdepth 1 -type f ! -name '*.*' ! -name '*~' -exec cat {} + ; } 2>/dev/null | grep -vE '^\s*#($|[^i])')
+# a plain "Defaults" line that sets use_pty and does not negate it (!use_pty)
+grep -E '^\s*Defaults\s' <<<"$SUDOERS" | grep -E '(\s|,)use_pty\b' | grep -qvE '!use_pty' && rec SUDO-02 5.2 L1 SUDO PASS "sudo commands use a pty" "" || rec SUDO-02 5.2 L1 SUDO FAIL "sudo commands use a pty" "no Defaults use_pty"
 lf=$(grep -E '^\s*Defaults\s+.*logfile\s*=' <<<"$SUDOERS" | head -1)
 SUDO_RS=0; sudo --version 2>/dev/null | grep -q 'sudo-rs' && SUDO_RS=1
 if [ -n "$lf" ]; then rec SUDO-03 5.2 L1 SUDO PASS "sudo has a dedicated log file" "$lf"
@@ -399,7 +484,8 @@ na=$(grep -E '^[^#].*!authenticate' <<<"$SUDOERS" | tr '\n' ';')
 [ -z "$na" ] && rec SUDO-05 5.2 L1 SUDO PASS "sudo re-authentication is not disabled globally" "" || rec SUDO-05 5.2 L1 SUDO FAIL "sudo re-authentication is not disabled globally" "$na"
 tt=$(grep -oE 'timestamp_timeout\s*=\s*-?[0-9]+' <<<"$SUDOERS" | grep -oE '\-?[0-9]+$' | tail -1)
 if [ -z "$tt" ] || { [ "$tt" -ge 0 ] && [ "$tt" -le 15 ]; }; then rec SUDO-06 5.2 L1 SUDO PASS "sudo authentication timeout is 15 minutes or less" "timestamp_timeout=${tt:-default(15)}"; else rec SUDO-06 5.2 L1 SUDO FAIL "sudo authentication timeout is 15 minutes or less" "timestamp_timeout=$tt"; fi
-pw=$(grep -E '^\s*auth\s+required\s+pam_wheel\.so.*use_uid.*group=' /etc/pam.d/su 2>/dev/null)
+# use_uid and group= may come in either order
+pw=$(grep -E '^\s*auth\s+required\s+pam_wheel\.so' /etc/pam.d/su 2>/dev/null | grep -E '\buse_uid\b' | grep -E '\bgroup=')
 if [ -n "$pw" ]; then g=$(grep -oE 'group=\S+' <<<"$pw" | cut -d= -f2); rec SUDO-07 5.2 L1 SUDO PASS "Access to su is restricted (pam_wheel)" "group=$g members=$(getent group "$g" | cut -d: -f4)"
 elif [ "$(stat -Lc %a /usr/bin/su)" = 750 ] || [ "$(stat -Lc %a /usr/bin/su)" = 4750 ]; then rec SUDO-07 5.2 L1 SUDO PASS "Access to su is restricted (pam_wheel)" "su binary mode $(stat -Lc %a /usr/bin/su) (root only)"
 else rec SUDO-07 5.2 L1 SUDO FAIL "Access to su is restricted (pam_wheel)" "pam_wheel not configured in /etc/pam.d/su"; fi
@@ -414,12 +500,16 @@ grep -qE '^\s*password\s.*pam_pwquality\.so' $CP && rec PAM-03 5.3 L1 PAM PASS "
 ph=$(grep -E '^\s*password\s.*pam_pwhistory\.so' $CP)
 [ -n "$ph" ] && rec PAM-04 5.3 L1 PAM PASS "pam_pwhistory is enabled" "" || rec PAM-04 5.3 L1 PAM FAIL "pam_pwhistory is enabled" "not in common-password"
 FL=/etc/security/faillock.conf
-fl_deny=$(conf_val deny $FL /etc/security/faillock.conf.d); fl_unlock=$(conf_val unlock_time $FL /etc/security/faillock.conf.d)
+# pam_faillock reads faillock.conf only (no drop-in directory); arguments on the PAM line win
+fl_deny=$(pam_arg pam_faillock.so deny $CA); [ -n "$fl_deny" ] || fl_deny=$(conf_val deny $FL)
+fl_unlock=$(pam_arg pam_faillock.so unlock_time $CA); [ -n "$fl_unlock" ] || fl_unlock=$(conf_val unlock_time $FL)
 if [ -n "$fl_deny" ] && [ "$fl_deny" -ge 1 ] && [ "$fl_deny" -le 5 ]; then rec PAM-05 5.3 L1 PAM PASS "Account lockout threshold is 5 failures or fewer" "deny=$fl_deny"; else rec PAM-05 5.3 L1 PAM FAIL "Account lockout threshold is 5 failures or fewer" "deny=${fl_deny:-<unset>}"; fi
 if [ -n "$fl_unlock" ] && { [ "$fl_unlock" -eq 0 ] || [ "$fl_unlock" -ge 900 ]; }; then rec PAM-06 5.3 L1 PAM PASS "Account lockout lasts 15 minutes or more" "unlock_time=$fl_unlock"; else rec PAM-06 5.3 L1 PAM FAIL "Account lockout lasts 15 minutes or more" "unlock_time=${fl_unlock:-<unset>}"; fi
 if grep -qsE '^\s*(even_deny_root|root_unlock_time)' $FL; then rec PAM-07 5.3 L2 PAM PASS "Lockout also applies to root" ""; else rec PAM-07 5.3 L2 PAM FAIL "Lockout also applies to root" "no even_deny_root"; fi
 PQ=/etc/security/pwquality.conf; PQD=/etc/security/pwquality.conf.d
-pq() { conf_val "$1" $PQ $PQD; }
+# libpwquality reads pwquality.conf.d/*.conf first and pwquality.conf LAST, so the main file
+# wins; an argument on the pam_pwquality line overrides both
+pq() { local v; v=$(pam_arg pam_pwquality.so "$1" $CP); [ -n "$v" ] || v=$(conf_val "$1" $PQD/*.conf $PQ); echo "$v"; }
 v=$(pq difok);       { [ -n "$v" ] && [ "$v" -ge 2 ]; } && rec PAM-08 5.3 L1 PAM PASS "Password must differ by 2+ characters (difok)" "difok=$v" || rec PAM-08 5.3 L1 PAM FAIL "Password must differ by 2+ characters (difok)" "difok=${v:-<unset>}"
 v=$(pq minlen);      { [ -n "$v" ] && [ "$v" -ge 14 ]; } && rec PAM-09 5.3 L1 PAM PASS "Minimum password length is 14 or more" "minlen=$v" || rec PAM-09 5.3 L1 PAM FAIL "Minimum password length is 14 or more" "minlen=${v:-<unset, default 8>}"
 mc=$(pq minclass); cr="d=$(pq dcredit) u=$(pq ucredit) l=$(pq lcredit) o=$(pq ocredit)"
@@ -451,7 +541,9 @@ g0=$(awk -F: '$4==0 && $1!~/^(root|sync|shutdown|halt|operator)$/{print $1}' /et
 rs=$(passwd -S root | awk '{print $2}'); [[ "$rs" =~ ^(P|L)$ ]] && rec ACCT-10 5.4 L1 ACCT PASS "root account access is controlled (password set or locked)" "status=$rs" || rec ACCT-10 5.4 L1 ACCT FAIL "root account access is controlled (password set or locked)" "status=$rs"
 rp=$(sudo -Hiu root env 2>/dev/null | awk -F= '/^PATH=/{print $2}'); badp=""
 IFS=: read -ra parts <<<"$rp"; for d in "${parts[@]}"; do { [ -z "$d" ] || [ "$d" = . ]; } && badp+="empty/dot "; [ -d "$d" ] && [ -n "$(find -L "$d" -maxdepth 0 \( -perm /022 -o ! -user root \) 2>/dev/null)" ] && badp+="$d "; done
-[ -z "$badp" ] && rec ACCT-11 5.4 L1 ACCT PASS "root PATH integrity" "$rp" || rec ACCT-11 5.4 L1 ACCT FAIL "root PATH integrity" "$badp"
+if [ -z "$rp" ]; then rec ACCT-11 5.4 L1 ACCT MANUAL "root PATH integrity" "could not read root's login PATH"
+elif [ -z "$badp" ]; then rec ACCT-11 5.4 L1 ACCT PASS "root PATH integrity" "$rp"
+else rec ACCT-11 5.4 L1 ACCT FAIL "root PATH integrity" "$badp"; fi
 bad=$(awk -F: '($3<1000 || $3==65534) && $1!="root" && $7!~/(nologin|false)$/ && $1!~/^(sync|shutdown|halt)$/{print $1":"$7}' /etc/passwd | tr '\n' ' ')
 [ -z "$bad" ] && rec ACCT-12 5.4 L1 ACCT PASS "System accounts have no login shell" "" || rec ACCT-12 5.4 L1 ACCT FAIL "System accounts have no login shell" "$bad"
 um=$(grep -rhsE '^\s*umask\s+[0-9]+' /etc/profile /etc/profile.d /etc/bash.bashrc 2>/dev/null | awk '{print $2}' | tail -1); lu=$(ld UMASK)
@@ -468,7 +560,7 @@ if has perl; then
       [ "$(CAND="$cand" HASH="$h" perl -e 'print crypt($ENV{CAND},$ENV{HASH})' 2>/dev/null)" = "$h" ] && { weakpw+="$u "; break; }
     done
   done < /etc/shadow
-  [ -z "$weakpw" ] && rec ACCT-16 5.4 X ACCT PASS "No account uses a trivially guessable password" "17-word dictionary + username" || rec ACCT-16 5.4 X ACCT FAIL "No account uses a trivially guessable password" "accounts: $weakpw(password value not recorded)"
+  [ -z "$weakpw" ] && rec ACCT-16 5.4 X ACCT PASS "No account uses a trivially guessable password" "15 trivial passwords plus two based on the user name" || rec ACCT-16 5.4 X ACCT FAIL "No account uses a trivially guessable password" "accounts: $weakpw(password value not recorded)"
 fi
 
 # ================================================ 6 Logging and auditing ====
@@ -477,7 +569,7 @@ JD=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep -vE '^\
 jv() { grep -E "^\s*$1=" <<<"$JD" | tail -1 | cut -d= -f2; }
 [ "$(jv Compress)" = yes ] && rec LOG-02 6.1 L1 LOG PASS "journald compresses large log files" "" || rec LOG-02 6.1 L1 LOG FAIL "journald compresses large log files" "Compress=$(jv Compress) (not explicitly set)"
 [ "$(jv Storage)" = persistent ] && rec LOG-03 6.1 L1 LOG PASS "journald writes logs to persistent disk" "" || rec LOG-03 6.1 L1 LOG FAIL "journald writes logs to persistent disk" "Storage=$(jv Storage) (not explicitly set)"
-if pkg_installed rsyslog && unit_on rsyslog.service; then rec LOG-04 6.1 L1 LOG PASS "rsyslog is installed and enabled" ""
+if pkg_installed rsyslog && unit_working rsyslog.service; then rec LOG-04 6.1 L1 LOG PASS "rsyslog is installed and enabled" ""
   fcm=$(grep -rhsE '^\s*\$FileCreateMode\s+[0-9]+' /etc/rsyslog.conf /etc/rsyslog.d | awk '{print $2}' | tail -1)
   { [ -n "$fcm" ] && [ $(( 0$fcm & ~0640 )) -eq 0 ]; } && rec LOG-05 6.1 L1 LOG PASS "rsyslog creates log files 0640 or stricter" "\$FileCreateMode $fcm" || rec LOG-05 6.1 L1 LOG FAIL "rsyslog creates log files 0640 or stricter" "\$FileCreateMode ${fcm:-<unset>}"
   rh=$(grep -rhsE '^\s*[^#].*(@@?[A-Za-z0-9\[]|omfwd|omrelp)' /etc/rsyslog.conf /etc/rsyslog.d | head -1)
@@ -496,22 +588,33 @@ av() { awk -F= -v k="$1" '{gsub(/ /,"")} tolower($1)==k{print tolower($2)}' /etc
 [ "$(av max_log_file_action)" = keep_logs ] && rec AUD-05 6.2 L2 AUDIT PASS "Audit logs are not automatically deleted" "max_log_file=$(av max_log_file)MB action=keep_logs" || rec AUD-05 6.2 L2 AUDIT FAIL "Audit logs are not automatically deleted" "max_log_file_action=$(av max_log_file_action)"
 [[ "$(av space_left_action)" =~ ^(email|exec|single|halt)$ && "$(av admin_space_left_action)" =~ ^(single|halt)$ ]] && rec AUD-06 6.2 L2 AUDIT PASS "System warns/halts when audit logs are full" "" || rec AUD-06 6.2 L2 AUDIT FAIL "System warns/halts when audit logs are full" "space_left_action=$(av space_left_action) admin_space_left_action=$(av admin_space_left_action)"
 AR=$(auditctl -l 2>/dev/null)
+SUIDLIST=$(lfind -type f \( -perm -4000 -o -perm -2000 \) | sort)
 nrules=$(grep -c '^-' <<<"$AR")
 i=10
 while IFS='|' read -r name re; do
+  if [ "$name" = "privileged command use" ]; then
+    # one rule for one binary proves nothing: compare against the binaries actually present
+    total=0; miss=0; first=""
+    while read -r bin; do [ -n "$bin" ] || continue; total=$((total+1))
+      grep -qF -- "-F path=$bin " <<<"$AR " || { miss=$((miss+1)); [ -n "$first" ] || first=$bin; }
+    done <<<"$SUIDLIST"
+    if [ "$total" -gt 0 ] && [ "$miss" -eq 0 ]; then rec "AUD-$i" 6.2 L2 AUDIT PASS "Audit rule: $name" "all $total setuid/setgid binaries have a rule"
+    else rec "AUD-$i" 6.2 L2 AUDIT FAIL "Audit rule: $name" "$miss of $total setuid/setgid binaries have no rule, e.g. ${first:-none}"; fi
+    i=$((i+1)); continue
+  fi
   if grep -qE -- "$re" <<<"$AR"; then rec "AUD-$i" 6.2 L2 AUDIT PASS "Audit rule: $name" ""
   elif [ "$name" = "sudo log file" ] && [ $SUDO_RS -eq 1 ]; then rec "AUD-$i" 6.2 L2 AUDIT NA "Audit rule: $name" "sudo-rs has no log file to watch"
   else rec "AUD-$i" 6.2 L2 AUDIT FAIL "Audit rule: $name" "no matching rule loaded ($nrules rules total)"; fi
   i=$((i+1))
 done <<'EOF'
-changes to sudoers (scope)|-w /etc/sudoers
+changes to sudoers (scope)|-w /etc/sudoers -p
 actions as another user (execve with euid change)|-F arch=b64 -S execve.*(euid|-C euid)
 sudo log file|-w /var/log/sudo\.log
 date and time changes|adjtimex|clock_settime
 network environment changes|sethostname
 privileged command use|-F perm=x -F auid>=1000
 unsuccessful file access attempts|-F exit=-EACCES
-user/group identity changes|-w /etc/shadow
+user/group identity changes|-w /etc/passwd -p
 discretionary access control changes|-S .*chmod
 successful mounts|-S mount
 session initiation|/run/utmp|/var/log/wtmp|/var/log/btmp
@@ -529,8 +632,14 @@ else rec AUD-31 6.2 L2 AUDIT FAIL "Audit log files and directory are access-rest
 # 6.3 integrity
 pkg_installed aide && rec AIDE-01 6.3 L1 AIDE PASS "AIDE is installed" "" || rec AIDE-01 6.3 L1 AIDE FAIL "AIDE is installed" ""
 [ -s /var/lib/aide/aide.db ] && rec AIDE-02 6.3 L1 AIDE PASS "AIDE database is initialised" "$(stat -c '%y' /var/lib/aide/aide.db | cut -d. -f1)" || rec AIDE-02 6.3 L1 AIDE FAIL "AIDE database is initialised" "no /var/lib/aide/aide.db"
-if systemctl is-enabled dailyaidecheck.timer >/dev/null 2>&1 || grep -rqs aide /etc/cron.d /etc/cron.daily /etc/crontab 2>/dev/null || systemctl is-enabled aide-check.timer >/dev/null 2>&1; then rec AIDE-03 6.3 L1 AIDE PASS "Filesystem integrity is checked on a schedule" ""
-else rec AIDE-03 6.3 L1 AIDE FAIL "Filesystem integrity is checked on a schedule" "no timer/cron job"; fi
+# Where aide-common ships a timer, the cron.daily script defers to it and does nothing, so
+# the timer has to be enabled and waiting. Older releases run /etc/cron.daily/aide directly.
+if systemctl cat dailyaidecheck.timer >/dev/null 2>&1; then
+  if systemctl is-enabled --quiet dailyaidecheck.timer 2>/dev/null && systemctl is-active --quiet dailyaidecheck.timer; then rec AIDE-03 6.3 L1 AIDE PASS "Filesystem integrity is checked on a schedule" "dailyaidecheck.timer enabled and active"
+  else rec AIDE-03 6.3 L1 AIDE FAIL "Filesystem integrity is checked on a schedule" "dailyaidecheck.timer is $(systemctl is-enabled dailyaidecheck.timer 2>&1 | head -1) / $(systemctl is-active dailyaidecheck.timer 2>&1 | head -1)"; fi
+elif [ -x /etc/cron.daily/aide ] && unit_working cron.service; then rec AIDE-03 6.3 L1 AIDE PASS "Filesystem integrity is checked on a schedule" "/etc/cron.daily/aide"
+elif grep -rhsE '^[^#]*aide.*--check' /etc/cron.d /etc/crontab 2>/dev/null | grep -q .; then rec AIDE-03 6.3 L1 AIDE PASS "Filesystem integrity is checked on a schedule" "cron entry running aide --check"
+else rec AIDE-03 6.3 L1 AIDE FAIL "Filesystem integrity is checked on a schedule" "no timer or cron job"; fi
 
 # ================================================== 7 System maintenance ====
 chk_perm PERM-01 7.1 L1 PERM /etc/passwd 644 root root
@@ -548,7 +657,7 @@ wd=$(lfind -type d -perm -0002 ! -perm -1000 | head -50); nwd=$(grep -c . <<<"$w
 { [ "$nww" -eq 0 ] && [ "$nwd" -eq 0 ]; } && rec PERM-11 7.1 L1 PERM PASS "No world-writable files; world-writable dirs have the sticky bit" "" || rec PERM-11 7.1 L1 PERM FAIL "No world-writable files; world-writable dirs have the sticky bit" "$nww files, $nwd dirs e.g. $(head -3 <<<"$ww$wd" | tr '\n' ' ')"
 uo=$(lfind \( -nouser -o -nogroup \) | head -200); nuo=$(grep -c . <<<"$uo")
 [ "$nuo" -eq 0 ] && rec PERM-12 7.1 L1 PERM PASS "No files without a valid owner or group" "" || rec PERM-12 7.1 L1 PERM FAIL "No files without a valid owner or group" "$nuo e.g. $(head -3 <<<"$uo" | tr '\n' ' ')"
-suid=$(lfind -type f \( -perm -4000 -o -perm -2000 \) | sort); rec PERM-13 7.1 L1 PERM MANUAL "SUID/SGID binaries are reviewed" "$(grep -c . <<<"$suid") files: $(tr '\n' ' ' <<<"$suid" | cut -c1-320)"
+suid=$SUIDLIST; rec PERM-13 7.1 L1 PERM MANUAL "SUID/SGID binaries are reviewed" "$(grep -c . <<<"$suid") files: $(tr '\n' ' ' <<<"$suid" | cut -c1-320)"
 
 bad=$(awk -F: '$2!="x"{print $1}' /etc/passwd | tr '\n' ' '); [ -z "$bad" ] && rec USR-01 7.2 L1 USERS PASS "All accounts use shadowed passwords" "" || rec USR-01 7.2 L1 USERS FAIL "All accounts use shadowed passwords" "$bad"
 bad=$(awk -F: '$2==""{print $1}' /etc/shadow | tr '\n' ' '); [ -z "$bad" ] && rec USR-02 7.2 L1 USERS PASS "No account has an empty password field" "" || rec USR-02 7.2 L1 USERS FAIL "No account has an empty password field" "$bad"

@@ -1,7 +1,21 @@
 ---
 - name: Look for a container runtime
-  ansible.builtin.shell: command -v dockerd containerd podman crio 2>/dev/null || true
+  ansible.builtin.shell: |
+    command -v dockerd containerd podman crio k3s microk8s nerdctl 2>/dev/null || true
+    [ -x /snap/bin/docker ] && echo /snap/bin/docker || true
+  environment:
+    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
   register: hardening_container_runtime
+  changed_when: false
+  check_mode: false
+
+# Ansible's mount facts only list device-backed mounts, so overlay, squashfs and the like
+# never appear there. Ask the kernel instead: what is loaded, and what is mounted.
+- name: List kernel modules and filesystem types in use
+  ansible.builtin.shell: |
+    awk '{print $1}' /proc/modules
+    awk '{print $3}' /proc/mounts
+  register: hardening_modules_in_use
   changed_when: false
   check_mode: false
 
@@ -9,8 +23,9 @@
   ansible.builtin.set_fact:
     hardening_modules_effective: >-
       {{ hardening_disabled_kernel_modules
-         | difference(ansible_facts.mounts | map(attribute='fstype') | list)
-         | difference(['overlay'] if hardening_container_runtime.stdout | length > 0 else [])
+         | reject('in', hardening_modules_in_use.stdout_lines)
+         | reject('in', hardening_modules_in_use.stdout_lines | map('replace', '_', '-') | list)
+         | difference(['overlay'] if (hardening_container_runtime.stdout | length > 0 or hardening_docker_present | default(false)) else [])
          | sort }}
 
 # dev-sec writes "install <fs> /bin/true"; CIS additionally expects a blacklist entry so the

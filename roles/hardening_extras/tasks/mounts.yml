@@ -65,18 +65,19 @@
 # without making it a mount. systemd ships tmp.mount for that; it is opt-in here because it
 # changes where /tmp lives.
 #
-# The unit is only INSTALLED here. Enabling it makes systemd mount it at the next
-# daemon-reload, which would hide the live contents of /tmp (sockets, lock files, Ansible's
-# own module files) in the middle of the run. The playbook's last play enables it immediately
-# before the reboot instead.
-- name: Install the tmpfs unit for /tmp
+# The unit is only STAGED here, outside systemd's search path. Once a tmp.mount unit exists
+# in /etc/systemd/system, systemd mounts it as soon as any service that needs /tmp is
+# (re)started - even when the unit is not enabled - and an empty tmpfs then hides the live
+# contents of /tmp (sockets, lock files, Ansible's own module files) in the middle of the
+# run. The playbook's last play installs and enables it immediately before the reboot.
+- name: Stage the tmpfs unit for /tmp
   when:
     - hardening_tmp_mount.rc != 0
     - hardening_tmp_tmpfs | bool
   block:
-    - name: Install tmp.mount with hardened options
+    - name: Stage tmp.mount with hardened options
       ansible.builtin.copy:
-        dest: /etc/systemd/system/tmp.mount
+        dest: /var/backups/hardening/tmp.mount.staged
         content: |
           # Managed by Ansible (hardening_extras)
           [Unit]
@@ -98,6 +99,19 @@
         owner: root
         group: root
         mode: "0644"
+
+# Switching an option off again must also take back what an earlier run staged or installed.
+- name: Withdraw a staged tmpfs unit that is no longer wanted
+  ansible.builtin.file:
+    path: /var/backups/hardening/tmp.mount.staged
+    state: absent
+  when: not hardening_tmp_tmpfs | bool
+
+- name: Withdraw the noexec drop-in when it is no longer wanted
+  ansible.builtin.file:
+    path: /etc/systemd/system/tmp.mount.d/50-hardening.conf
+    state: absent
+  when: not hardening_tmp_noexec | bool
 
 - name: Report when /tmp cannot take mount options
   ansible.builtin.debug:

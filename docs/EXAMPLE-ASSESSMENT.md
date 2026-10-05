@@ -11,6 +11,14 @@
 > A worked example: the assessment HardenProof produced for a disposable lab VM, written for
 > that VM's owner. The account name and addresses are placeholders. The raw evidence it
 > refers to (audit output, run logs, the HTML report) is per-host data and is not published.
+>
+> It was written against the first version of the tool and is kept as it was, as a record
+> of one assessment. Where it names a variable, a command or a file, the README is
+> authoritative for the current version. In particular: the sudo-rs workaround, the
+> audit-log settings and IP forwarding are now detected automatically; `hardening_profile:
+> pci` replaces setting the password age and lockout by hand; pending updates are no longer
+> installed by default; a mail server pulled in by AIDE is restricted to loopback, not
+> removed; and audits are scheduled with `./harden.sh audit --fail-on-regression`.
 
 ## 1. Result
 
@@ -28,7 +36,7 @@ rebooted after hardening and came back with SSH, sudo, Docker networking and apt
 **The VM is not "secure" on the strength of these numbers.** Three of the twelve open items
 matter more than the hundred that closed:
 
-1. **The `admin` password is still trivially guessable** (it is in a 17-word dictionary).
+1. **The `admin` password is still trivially guessable** (it matches a short list of trivial passwords).
    I did not change it - that is your credential. SSH no longer accepts passwords, so it is
    no longer remotely exploitable, but it is still the sudo password and the console
    password. Run `passwd` (the new policy requires 14+ characters).

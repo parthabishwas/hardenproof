@@ -26,14 +26,16 @@ A common first question, and a good example of how the baseline was decided.
 |---|---|
 | No benchmark asks for it | Neither CIS [CIS 5.1], the dev-sec SSH baseline [R14] nor PCI DSS [R17] lists a non-default port as a control. An auditor gives no credit for it. |
 | It is obscurity, not a control | NIST's server-security guide lists *open design* as a principle: security should not depend on the secrecy of the implementation [R2]. A full TCP scan finds a moved sshd in seconds, and internet scanners index non-standard ports. |
-| What it does buy is already bought | Moving the port reduces bot noise in the logs. With the baseline applied bots cannot succeed anyway: passwords are off, `MaxAuthTries 4`, `MaxStartups 10:30:60`, and current OpenSSH penalises abusive sources by default (`PerSourcePenalties`) [R6]. |
+| What it does buy is already bought | Moving the port reduces bot noise in the logs. With the baseline applied bots cannot succeed anyway: passwords are off, `MaxAuthTries 4` and `MaxStartups 10:30:60` limit what they can try, and OpenSSH 9.8 and later (Ubuntu 26.04) also penalises abusive sources by default (`PerSourcePenalties`) [R6]. On 22.04 and 24.04 only the first three apply. |
 | It has costs | Every client config, firewall rule, monitoring check and automation inventory needs the exception. On ports above 1023 an unprivileged local process can bind the port if sshd is down. On RHEL-family systems SELinux must be told about the new port. |
 | The effective alternative exists | Restrict *who can reach* the port: a source address in `hardening_fw_allow`, or a bastion or VPN. That removes the exposure instead of relocating it. |
 
 When changing it is reasonable: an internet-facing host where log noise is a real operational
-problem and source restriction is impossible. Set `hardening_ssh_port` and the matching
-`hardening_fw_allow` entry; the preflight refuses to run if the two disagree. **Judgement:**
-treat it as noise reduction, never as a mitigation.
+problem and source restriction is impossible. Do it as a separate, manual step before
+hardening: a run does not move sshd, because its access check connects on the port the
+inventory names and would roll the change back. Afterwards set `hardening_ssh_port` to the
+port sshd uses and allow it in `hardening_fw_allow`; the preflight stops if they disagree.
+**Judgement:** treat it as noise reduction, never as a mitigation.
 
 ---
 
@@ -98,7 +100,7 @@ Ubuntu ships without an active firewall: every listening port is reachable.
 | Inbound default | deny | Turns "what is listening" into a reviewed allow-list; a service started by mistake is not exposed | [CIS 4][R17] 1.3.1, 1.4.1 |
 | Outbound default | allow | **Judgement.** Egress filtering is valuable but needs a per-application inventory of destinations; a wrong guess breaks patching and DNS. Add it per environment | - |
 | Routed default | deny | A server is not a router; this also contains what container forwarding makes possible | [CIS 4] |
-| Allow-list | 22/tcp only | Add your service ports in `hardening_fw_allow` | [R17] 1.2.5 |
+| Allow-list | 22/tcp only | Add your service ports in `hardening_fw_allow`. The SSH port is always allowed, whatever the list says. Rules are added, never removed: taking a port out of the list does not close it | [R17] 1.2.5 |
 
 **Docker-published ports** are DNATed before the INPUT chain and bypass ufw; Docker's
 documentation states the incompatibility [R12]. Two answers: bind published ports to
@@ -179,12 +181,13 @@ Written to `/etc/sysctl.d/90-dev-sec.conf`. Kernel documentation for the keys: [
 | `net.ipv4.conf.*.accept_redirects`, `secure_redirects`, IPv6 equivalents | `0` | An on-link attacker cannot rewrite the host's routes with ICMP redirects | [CIS 3.3][R11] |
 | `net.ipv4.conf.*.send_redirects` | `0` | Only routers send redirects | [CIS 3.3] |
 | `net.ipv4.conf.*.accept_source_route` (and IPv6) | `0` | Sender-chosen routes bypass network controls | [CIS 3.3] |
-| `net.ipv4.conf.*.rp_filter` | `1` (strict) | Drops packets whose source could not be reached through the arriving interface (spoofing) | [CIS 3.3][R27] |
+| `net.ipv4.conf.*.rp_filter` | `1` (strict), or `2` (loose) where the host has several default routes or policy routing | Drops packets whose source could not be reached through the arriving interface (spoofing). Strict mode also drops legitimate replies on asymmetric paths, so the preflight selects loose mode there [R27] | [CIS 3.3][R27] |
 | `net.ipv4.conf.*.log_martians` | `1` | Spoofed or impossible sources are logged | [CIS 3.3] |
 | `net.ipv4.tcp_syncookies` | `1` | Service survives a SYN flood | [CIS 3.3] |
 | `net.ipv4.icmp_echo_ignore_broadcasts`, `icmp_ignore_bogus_error_responses` | `1` | No smurf amplification; less log noise | [CIS 3.3] |
 | `net.ipv6.conf.*.accept_ra` | `0` | A rogue router advertisement cannot become the default route | [CIS 3.3] |
-| `net.ipv4.ip_forward` | `0`, or `1` when Docker is detected | CIS wants 0. Docker bridge networking needs forwarding, so the playbook keeps it on where Docker is installed; exposure is then bounded by the FORWARD chain policy (drop) | [CIS 3.3][R12] |
+| `net.ipv4.ip_forward`, `net.ipv6.conf.all.forwarding` | `0`, unless the host already forwards or Docker is installed | CIS wants 0. Containers, virtual machines, VPN gateways and routers need forwarding, and switching it off takes their networking down at once, so a host that is forwarding keeps doing so and the audit keeps reporting it. Exposure is bounded by the FORWARD chain policy (drop). **Judgement** | [CIS 3.3][R12] |
+| per-interface redirect, source-route and RA settings | `0` on every interface | dev-sec sets `all` and `default`. `default` only reaches interfaces created later, and for redirects the kernel uses "all OR the interface's value", so a network card that exists at boot keeps accepting and sending them. A glob entry covers every interface. **Judgement** | [R11] |
 | `net.ipv4.tcp_timestamps` | `1` | dev-sec sets 0. **Judgement** to keep the kernel default: timestamps provide PAWS and RTT measurement; turning them off costs correctness on fast links for a minor uptime-fingerprinting gain. CIS does not ask for 0 | [R26] |
 | `net.core.bpf_jit_harden` | `2` | Constant blinding against JIT spraying | [R10] |
 
@@ -205,7 +208,7 @@ or default route from router advertisements lose IPv6. Override single keys in
 | Modules cramfs, freevxfs, hfs, hfsplus, jffs2, udf | disabled and blacklisted | Unused filesystem drivers reachable by mounting a crafted image | [CIS 1.1.1] |
 | `usb-storage` | disabled | No mass-storage exfiltration or ingress on physical hosts | [CIS 1.1.1] |
 | dccp, tipc, rds, sctp | disabled | Rarely used protocol stacks that any user can trigger loading of | [CIS 3.2] |
-| overlayfs | disabled, unless Docker, containerd, Podman or CRI-O is installed | CIS Level 2 item; container runtimes cannot work without it, so the role checks first | [CIS 1.1.1] |
+| overlayfs | disabled, unless a container runtime is installed or the module is in use | CIS Level 2 item; container runtimes cannot work without it. More generally, no module that is currently loaded or backs a mounted filesystem is disabled | [CIS 1.1.1] |
 | squashfs, vfat | left enabled | snap needs squashfs; EFI system partitions are vfat. **Judgement** | - |
 | `/boot/grub/grub.cfg` | mode 0600 | It reveals kernel parameters and would hold a hashed boot password. Ubuntu 22.04 writes it world-readable | [CIS 1.4] |
 | postfix, when the AIDE packages pull it in | loopback only | On Ubuntu 22.04 the AIDE packages depend on a mailer, which installs postfix listening on every interface. An integrity checker must not add a network service. A postfix that was already installed is left alone unless `hardening_mta_loopback_only` is set | [CIS 2.1] |
@@ -259,12 +262,13 @@ report becomes noise.
 | Not done | Why |
 |---|---|
 | Change the SSH port | Section 1 |
-| Install fail2ban | With passwords off there is nothing to brute-force; OpenSSH's per-source penalties and `MaxStartups` cover connection abuse. One more root-run log parser is attack surface |
+| Install fail2ban | With passwords off there is nothing to brute-force; `MaxStartups` (and, on OpenSSH 9.8 and later, per-source penalties) covers connection abuse. One more root-run log parser is attack surface |
 | Disable IPv6 | CIS asks only that its status be a decision. Disabling the stack breaks software that binds `::`; filtering it is cleaner |
 | GRUB password | Done wrong, every unattended reboot waits at the console. Belongs in the image, with `--unrestricted` on the default entry |
 | Strip all unknown setuid bits (a dev-sec option) | Removes setuid from anything not on dev-sec's allow-list, which breaks legitimate vendor binaries |
 | Egress firewall rules | Needs application knowledge; section 4 |
-| Change or test user passwords | Credentials belong to their owners. The audit flags trivially guessable ones |
+| Change user passwords | Credentials belong to their owners. The audit tests each password hash against a list of about fifteen trivial passwords and flags a match; it does not change anything |
+| Delete users' `.netrc` and `.rhosts` files | dev-sec would. They are user data, often the only copy of a service credential, and are in no backup. The audit reports them (USR-10) and the owner decides |
 | Repartition | Cannot be done online. Put separate `/var`, `/var/log`, `/var/log/audit`, `/home` and `/var/tmp` in the image |
 | Move AppArmor profiles from complain to enforce | Each needs testing against its program |
 
@@ -293,12 +297,15 @@ what it decided at the start of each run:
 
 | Detected | Effect |
 |---|---|
-| Docker installed | IPv4 forwarding stays on |
+| Docker installed, or the host already forwards packets | IP forwarding stays on |
+| Several default routes or policy routing | Loose reverse-path filtering |
 | No dedicated `/var/log/audit` filesystem | Bounded audit-log rotation instead of keep-and-halt |
 | A global IPv6 address | sshd listens on IPv6 as well as IPv4 |
 | IPv6 default route from kernel router advertisements | The run stops until you choose: keep accepting RAs, or accept losing IPv6 |
 | sudo-rs as the default sudo | Automation uses the classic `sudo.ws`; the sudo log-file setting is omitted |
-| `/tmp` not a tmpfs | Mount options are skipped unless `hardening_tmp_tmpfs` is set |
+| `/tmp` on the root filesystem | Mount options are skipped unless `hardening_tmp_tmpfs` is set |
+| Kernel modules loaded or backing a mounted filesystem; a container runtime | Those modules are not disabled |
+| The automation account's UID or password age | The run refuses to start if account hardening would lock it out |
 
 Beyond that, every environment has reasons to differ. Two mechanisms keep those differences
 visible:
@@ -319,7 +326,6 @@ visible:
 | R1 | CIS Ubuntu Linux Benchmarks - https://www.cisecurity.org/benchmark/ubuntu_linux |
 | R2 | NIST SP 800-123, Guide to General Server Security - https://csrc.nist.gov/pubs/sp/800/123/final |
 | R3 | NIST SP 800-63B, Digital Identity Guidelines: Authentication - https://pages.nist.gov/800-63-3/sp800-63b.html (revision 4: https://csrc.nist.gov/pubs/sp/800/63/b/4/final) |
-| R4 | NIST SP 800-53 Rev. 5, Security and Privacy Controls - https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final |
 | R5 | NIST SP 800-92, Guide to Computer Security Log Management - https://csrc.nist.gov/pubs/sp/800/92/final |
 | R6 | OpenSSH `sshd_config(5)` - https://man.openbsd.org/sshd_config |
 | R7 | Terrapin attack (CVE-2023-48795) - https://terrapin-attack.com/ |

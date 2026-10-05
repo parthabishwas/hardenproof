@@ -21,7 +21,7 @@
   gather_facts: false
   vars:
     label: adhoc
-    audit_out: "{{ playbook_dir }}/../reports/{{ inventory_hostname }}/{{ label }}"
+    audit_out: "{{ reports_dir | default(playbook_dir ~ '/../reports') }}/{{ inventory_hostname }}/{{ label }}"
     lynis_version: 3.1.7
     lynis_sha256: 48d829d0dc2c583a3e838cc09a7190b69a3af844bcb913c7cf9c0226b04b95c5
     lynis_tarball: "{{ playbook_dir }}/../vendor/lynis-{{ lynis_version }}.tar.gz"

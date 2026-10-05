@@ -4,7 +4,6 @@ vendor/
 .secrets/
 *.retry
 __pycache__/
-.playwright-mcp/
 
 # audit evidence, run logs and generated reports are per-host data
 reports/

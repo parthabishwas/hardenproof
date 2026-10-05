@@ -1,0 +1,19 @@
+---
+# Used by tests/e2e.sh: reboot a host through the same privilege-escalation detection the
+# real playbooks use.
+- name: Detect how to escalate privileges
+  hosts: all
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Detect the sudo implementation
+      ansible.builtin.import_tasks: ../playbooks/tasks/detect-become.yml
+
+- name: Reboot
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Reboot the host
+      ansible.builtin.reboot:
+        reboot_timeout: 600

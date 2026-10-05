@@ -27,18 +27,38 @@ LEVEL_WORD = {"L1": "Level 1", "L2": "Level 2", "X": "Additional"}
 
 
 # ------------------------------------------------------------------ input ---
-def load_tsv(path):
+class InputError(Exception):
+    """Audit input that cannot be turned into a trustworthy report."""
+
+
+_CTRL = {c: " " for c in range(32) if c != 9}     # control characters other than TAB
+
+
+def load_tsv(path, require_checks=True):
+    """Read cis_audit.tsv. The file is whatever the audited host printed, so it is treated
+    as untrusted: undecodable bytes are replaced, stray control characters removed, and
+    anything that is not a well-formed row stops the report instead of being guessed at."""
     meta, rows = {}, OrderedDict()
-    for line in Path(path).read_text().splitlines():
+    text = Path(path).read_bytes().decode("utf-8", errors="replace")
+    for n, line in enumerate(text.split("\n"), 1):
+        line = line.rstrip("\r").translate(_CTRL)
         if not line.strip():
             continue
         parts = line.split("\t")
         if parts[0] == "#meta":
-            meta[parts[1]] = parts[2] if len(parts) > 2 else ""
+            if len(parts) >= 2:
+                meta[parts[1]] = parts[2] if len(parts) > 2 else ""
             continue
+        if line.startswith("#"):
+            continue
+        if len(parts) < 6 or not parts[0] or parts[4] not in STATUS_WORD or parts[4] == "ACCEPTED":
+            raise InputError(f"{path}: line {n} is not an audit row (expected ID, CIS, LEVEL, GROUP, "
+                             f"STATUS, TITLE, EVIDENCE with STATUS one of PASS/FAIL/MANUAL/NA): {line[:80]!r}")
         parts += [""] * (7 - len(parts))
         cid, cis, level, group, status, title, evidence = parts[:7]
         rows[cid] = dict(id=cid, cis=cis, level=level, group=group, status=status, title=title, evidence=evidence)
+    if require_checks and not rows:
+        raise InputError(f"{path}: no audit rows. An empty audit must not be reported as 'no findings'.")
     return meta, rows
 
 
@@ -52,7 +72,8 @@ def load_lynis(path):
             continue
         k, v = line.split("=", 1)
         if k == "hardening_index":
-            out["hardening_index"] = int(v)
+            if v.strip().isdigit():
+                out["hardening_index"] = int(v)
         elif k == "lynis_version":
             out["version"] = v
         elif k == "warning[]":
@@ -81,30 +102,51 @@ def load_exceptions(path, host, today):
     list limits it to some inventory hosts. A malformed entry stops the report: an
     acceptance nobody can attribute or that never expires is not an acceptance.
     """
-    if not path or not Path(path).exists():
+    if not path:
         return {}
+    if not Path(path).exists():
+        raise InputError(f"{path}: exceptions file not found")
     data = yaml.safe_load(Path(path).read_text()) or {}
-    out, errors = {}, []
-    for n, e in enumerate(data.get("exceptions") or [], 1):
+    entries = data.get("exceptions") if isinstance(data, dict) else None
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        raise InputError(f"{path}: 'exceptions' must be a list")
+    out, errors, seen = {}, [], set()
+    for n, e in enumerate(entries, 1):
+        if not isinstance(e, dict):
+            errors.append(f"entry {n}: must be a mapping with id, reason, accepted_by and expires")
+            continue
         cid = str(e.get("id", "")).strip()
         missing = [k for k in ("id", "reason", "accepted_by", "expires") if not str(e.get(k, "") or "").strip()]
         if missing:
             errors.append(f"entry {n} ({cid or 'no id'}): missing {', '.join(missing)}")
             continue
         exp = e["expires"]
+        if isinstance(exp, datetime.datetime):
+            exp = exp.date()
         if not isinstance(exp, datetime.date):
             try:
-                exp = datetime.date.fromisoformat(str(exp))
+                exp = datetime.date.fromisoformat(str(exp).strip())
             except ValueError:
                 errors.append(f"entry {n} ({cid}): expires must be YYYY-MM-DD")
                 continue
         hosts = e.get("hosts")
-        if hosts and host not in hosts:
+        if isinstance(hosts, str):
+            hosts = [hosts]               # "hosts: web01" means that one host, not a substring test
+        if hosts is not None and not isinstance(hosts, list):
+            errors.append(f"entry {n} ({cid}): hosts must be a list of inventory host names")
             continue
+        if hosts and host not in [str(h) for h in hosts]:
+            continue
+        if cid in seen:
+            errors.append(f"entry {n} ({cid}): a second entry for the same check and host; keep one")
+            continue
+        seen.add(cid)
         out[cid] = dict(id=cid, reason=str(e["reason"]).strip(), accepted_by=str(e["accepted_by"]).strip(),
                         expires=exp.isoformat(), expired=exp < today)
     if errors:
-        sys.exit(f"error: {path}:\n  " + "\n  ".join(errors))
+        raise InputError(f"{path}:\n  " + "\n  ".join(errors))
     return out
 
 
@@ -115,8 +157,20 @@ def fmt_pct(s):
 def run_dirs(host_dir):
     """Audit runs of one host, oldest first: 'baseline' then timestamped directories."""
     host_dir = Path(host_dir)
-    runs = sorted(p for p in host_dir.iterdir() if p.is_dir() and not p.is_symlink()
-                  and p.name != "baseline" and (p / "cis_audit.tsv").exists())
+
+    def when(p):       # the time the audit ran, as recorded by the audit itself
+        try:
+            for line in (p / "cis_audit.tsv").read_bytes().decode("utf-8", "replace").split("\n")[:12]:
+                f = line.split("\t")
+                if f[:2] == ["#meta", "date_utc"] and len(f) > 2:
+                    return (f[2], p.name)
+        except OSError:
+            pass
+        return ("", p.name)
+
+    runs = sorted((p for p in host_dir.iterdir() if p.is_dir() and not p.is_symlink()
+                   and p.name != "baseline" and not p.name.startswith("_")
+                   and (p / "cis_audit.tsv").exists()), key=when)
     base = host_dir / "baseline"
     return ([base] if (base / "cis_audit.tsv").exists() else []) + runs
 
@@ -124,8 +178,11 @@ def run_dirs(host_dir):
 def load_history(host_dir):
     out = []
     for p in run_dirs(host_dir):
-        meta, rows = load_tsv(p / "cis_audit.tsv")
-        out.append(dict(name=p.name, date=meta.get("date_utc", ""), l1=score(rows, level="L1"),
+        try:
+            meta, rows = load_tsv(p / "cis_audit.tsv")
+        except InputError:
+            continue                      # an unreadable old run does not block today's report
+        out.append(dict(name=p.name, has_report=(p / "report.html").exists(), date=meta.get("date_utc", ""), l1=score(rows, level="L1"),
                         l2=score(rows, level="L2"), all=score(rows)))
     return out
 
@@ -136,7 +193,7 @@ def build(current, baseline, catalogue, exceptions=None, host=None, today=None, 
     lyn = load_lynis(Path(current) / "lynis-report.dat")
     bmeta, base, blyn = {}, None, None
     if baseline:
-        bmeta, base = load_tsv(Path(baseline) / "cis_audit.tsv")
+        bmeta, base = load_tsv(Path(baseline) / "cis_audit.tsv", require_checks=False)
         blyn = load_lynis(Path(baseline) / "lynis-report.dat")
     # Acceptance is applied here, on top of the audit evidence; cis_audit.tsv is never altered.
     host = host or Path(current).resolve().parent.name      # reports/<host>/<run>
@@ -154,8 +211,10 @@ def build(current, baseline, catalogue, exceptions=None, host=None, today=None, 
                 r["raw_status"], r["status"] = r["status"], "ACCEPTED"
     scores = OrderedDict((lv or "all", score(cur, level=lv)) for lv in list(LEVELS) + [None])
     bscores = OrderedDict((lv or "all", score(base, level=lv)) for lv in list(LEVELS) + [None]) if base is not None else None
-    delta = dict(fixed=[], regressed=[], reclassified=[], new=[])
+    delta = dict(fixed=[], regressed=[], reclassified=[], new=[], missing=[])
     if base is not None:
+        # a check the baseline had and this audit does not print at all
+        delta["missing"] = [cid for cid in base if cid not in cur]
         for cid, r in cur.items():
             b = base.get(cid)
             now = r.get("raw_status", r["status"])     # compare audit results, not risk decisions
@@ -170,8 +229,11 @@ def build(current, baseline, catalogue, exceptions=None, host=None, today=None, 
     # Drift: what changed since the audit before this one (not since the baseline).
     drift = None
     if previous and Path(previous).resolve() != Path(current).resolve():
-        pmeta, prev = load_tsv(Path(previous) / "cis_audit.tsv")
+        pmeta, prev = load_tsv(Path(previous) / "cis_audit.tsv", require_checks=False)
         drift = dict(date=pmeta.get("date_utc", ""), regressed=[], fixed=[])
+        # A check that passed last time and is simply absent now is not "no change": the
+        # control is no longer being verified. Count it as a regression.
+        drift["missing"] = [cid for cid, pr in prev.items() if cid not in cur and pr["status"] == "PASS"]
         for cid, r in cur.items():
             now, was = r.get("raw_status", r["status"]), prev.get(cid, {}).get("status")
             if was == "PASS" and now == "FAIL":
@@ -179,7 +241,7 @@ def build(current, baseline, catalogue, exceptions=None, host=None, today=None, 
             elif was == "FAIL" and now == "PASS":
                 drift["fixed"].append(cid)
         # a regression someone has formally accepted is not a surprise
-        drift["unaccepted"] = [c for c in drift["regressed"] if cur[c]["status"] != "ACCEPTED"]
+        drift["unaccepted"] = [c for c in drift["regressed"] if cur[c]["status"] != "ACCEPTED"] + drift["missing"]
     hist = load_history(history) if history else []
     groups = list(OrderedDict.fromkeys(r["group"] for r in cur.values()))
     return dict(drift=drift, history=hist, run=Path(current).name, inv_host=host, cat=cat, meta=meta, cur=cur, lyn=lyn, bmeta=bmeta, base=base, blyn=blyn,
@@ -189,28 +251,31 @@ def build(current, baseline, catalogue, exceptions=None, host=None, today=None, 
 # --------------------------------------------------------------- markdown ---
 def render_md(d):
     cur, base, cat, meta = d["cur"], d["base"], d["cat"], d["meta"]
-    esc = lambda t: t.replace("|", "\\|")
-    L = [f"# Audit summary - {meta.get('hostname', '?')}", "",
-         f"- Host: `{meta.get('hostname')}` - {meta.get('os')} - kernel {meta.get('kernel')}",
-         f"- Audit time (UTC): {meta.get('date_utc')} - audit script v{meta.get('script_version')}", ""]
-    L += ["## Scores", "", "| Profile | Baseline | Current | Pass | Fail | Manual | N/A |", "|---|---|---|---|---|---|---|"]
+
+    def esc(t):        # every value from the audited host: no raw HTML, no table breakage
+        return escape(str(t), quote=False).replace("|", "\\|").replace("`", "'")
+
+    L = [f"# Audit summary - {esc(meta.get('hostname', '?'))}", "",
+         f"- Host: {esc(meta.get('hostname', '?'))} - {esc(meta.get('os', ''))} - kernel {esc(meta.get('kernel', ''))}",
+         f"- Audit time (UTC): {esc(meta.get('date_utc', ''))} - audit script v{esc(meta.get('script_version', ''))}", ""]
+    L += ["## Scores", "", "| Profile | Baseline | Current | Pass | Fail | Accepted | Manual | N/A |", "|---|---|---|---|---|---|---|---|"]
     for lv, name in list(LEVELS.items()) + [("all", "All checks")]:
         s = d["scores"][lv]
         b = fmt_pct(d["bscores"][lv]) if d["bscores"] else "-"
-        L.append(f"| {name} | {b} | {fmt_pct(s)} | {s['passed']} | {s['failed']} | {s['manual']} | {s['na']} |")
+        L.append(f"| {name} | {b} | {fmt_pct(s)} | {s['passed']} | {s['failed']} | {s['accepted']} | {s['manual']} | {s['na']} |")
     L.append("")
     if base is not None:
         L += [f"Fixed: {len(d['delta']['fixed'])}, regressed: {len(d['delta']['regressed'])}, "
               f"other status changes: {len(d['delta']['reclassified'])}.", ""]
-    for status, title in (("FAIL", "Open findings"), ("MANUAL", "Manual review items")):
+    for status, title in (("FAIL", "Open findings"), ("ACCEPTED", "Accepted risks"), ("MANUAL", "Manual review items")):
         items = [r for r in cur.values() if r["status"] == status]
         L += [f"## {title} ({len(items)})", "", "| ID | Lvl | Family | Check | Evidence |", "|---|---|---|---|---|"]
-        L += [f"| {r['id']} | {r['level']} | {r['group']} | {esc(r['title'])} | {esc(r['evidence'])} |" for r in items]
+        L += [f"| {esc(r['id'])} | {esc(r['level'])} | {esc(r['group'])} | {esc(r['title'])} | {esc(r['evidence'])} |" for r in items]
         L.append("")
     L += ["## All checks", "", "| ID | CIS | Lvl | Family | Status | Baseline | Check | Evidence |", "|---|---|---|---|---|---|---|---|"]
     for r in cur.values():
         b = base[r["id"]]["status"] if base is not None and r["id"] in base else "-"
-        L.append(f"| {r['id']} | {r['cis']} | {r['level']} | {r['group']} ({cat.get(r['group'], {}).get('title', '')}) | "
+        L.append(f"| {esc(r['id'])} | {esc(r['cis'])} | {esc(r['level'])} | {esc(r['group'])} ({esc(cat.get(r['group'], {}).get('title', ''))}) | "
                  f"{r['status']} | {b} | {esc(r['title'])} | {esc(r['evidence'])} |")
     return "\n".join(L) + "\n"
 
@@ -415,8 +480,8 @@ def render_html(d):
         nr = len(delta["regressed"])
         verdict.append(f'{len(delta["fixed"])} checks were fixed since the baseline and '
                        + ("none regressed." if not nr else f'{nr} regressed.'))
-    if d["drift"] and d["drift"]["regressed"]:
-        n = len(d["drift"]["regressed"])
+    if d["drift"] and (d["drift"]["regressed"] or d["drift"]["missing"]):
+        n = len(d["drift"]["regressed"]) + len(d["drift"]["missing"])
         verdict.append(f'{n} check{"s have" if n != 1 else " has"} regressed since the previous audit.')
     H = []
     w = H.append
@@ -506,7 +571,7 @@ def render_html(d):
         w('<div class="scroll"><table><thead><tr><th>ID</th><th>Level</th><th>Family</th><th>Check</th><th>Evidence</th></tr></thead><tbody>')
         for r in items:
             fam = cat.get(r["group"], {}).get("title", r["group"])
-            lvl = LEVEL_WORD.get(r["level"], r["level"])
+            lvl = e(LEVEL_WORD.get(r["level"], r["level"]))
             w(f'<tr><td class="id"><a href="#chk-{e(r["id"])}">{e(r["id"])}</a></td><td>{lvl}</td>'
               f'<td><a href="#fam-{e(r["group"])}">{e(fam)}</a></td><td>{e(r["title"])}{exc_note(r)}</td><td class="ev">{e(r["evidence"])}</td></tr>')
         w('</tbody></table></div></section>')
@@ -568,7 +633,7 @@ def render_html(d):
             if base is not None and r["id"] in base and base[r["id"]]["status"] != r.get("raw_status", r["status"]):
                 was = f'<div class="was">was {STATUS_WORD[base[r["id"]]["status"]].lower()}</div>'
             w(f'<tr id="chk-{e(r["id"])}" data-status="{r["status"]}"><td>{status_html(r["status"])}{was}</td>'
-              f'<td class="id">{e(r["id"])}</td><td>{LEVEL_WORD.get(r["level"], e(r["level"]))}</td><td>{e(r["title"])}{exc_note(r)}</td><td class="ev">{e(r["evidence"])}</td></tr>')
+              f'<td class="id">{e(r["id"])}</td><td>{e(LEVEL_WORD.get(r["level"], r["level"]))}</td><td>{e(r["title"])}{exc_note(r)}</td><td class="ev">{e(r["evidence"])}</td></tr>')
         w('</tbody></table></div></details>')
     w('</section>')
 
@@ -579,6 +644,9 @@ def render_html(d):
         if d["drift"]:
             dr = d["drift"]
             when = dr["date"].replace("T", " ").replace("Z", " UTC")
+            if dr["missing"]:
+                w(f'<p class="note"><span class="expired">No longer checked:</span> {e(", ".join(dr["missing"]))}. '
+                  'These passed in the previous audit and are absent from this one, so they count as regressions.</p>')
             if dr["regressed"] or dr["fixed"]:
                 w(f'<p class="note">Since the previous audit ({e(when)}): {len(dr["regressed"])} regressed, {len(dr["fixed"])} fixed.</p>')
                 w('<div class="scroll"><table><thead><tr><th>Change</th><th>ID</th><th>Check</th><th>Evidence</th></tr></thead><tbody>')
@@ -612,7 +680,7 @@ def render_html(d):
               '<th class="n">Failing</th><th class="n">Manual</th><th>Report</th></tr></thead><tbody>')
             for h in reversed(hist):
                 me = h["name"] == d["run"]
-                link = "this report" if me else f'<a href="../{e(h["name"])}/report.html">open</a>'
+                link = "this report" if me else (f'<a href="../{e(h["name"])}/report.html">open</a>' if h["has_report"] else "not rendered")
                 w(f'<tr{" class=cur" if me else ""}><td class="id">{e(h["name"])}</td><td>{e(h["date"].replace("T", " ").replace("Z", ""))}</td>'
                   f'<td class="n">{fmt_pct(h["l1"])}</td><td class="n">{fmt_pct(h["l2"])}</td><td class="n">{h["all"]["failed"]}</td>'
                   f'<td class="n">{h["all"]["manual"]}</td><td>{link}</td></tr>')
@@ -650,7 +718,16 @@ def render_fleet(reports_dir):
         runs = [p for p in run_dirs(hd) if (p / "results.json").exists()]
         if not runs:
             continue
-        r = json.loads((runs[-1] / "results.json").read_text())
+        try:
+            r = json.loads((runs[-1] / "results.json").read_text())
+            sc = r["scores"]
+            for k in ("L1", "L2", "all"):
+                for f in ("failed", "accepted", "manual", "pct"):
+                    sc[k].setdefault(f, 0 if f != "pct" else None)
+            r.setdefault("meta", {})
+        except (ValueError, KeyError, TypeError, OSError) as err:
+            print(f"warning: skipping {hd.name}: unreadable results.json ({err.__class__.__name__})", file=sys.stderr)
+            continue
         rows.append((hd.name, runs[-1].name, r))
     H = []
     w = H.append
@@ -709,11 +786,17 @@ def main():
     if not previous and a.history:
         runs = run_dirs(a.history)
         names = [p.name for p in runs]
-        cur_name = Path(a.current).name
+        cur_name = Path(a.current).resolve().name       # also when given as .../latest
         if cur_name in names and names.index(cur_name) > 0:
             previous = str(runs[names.index(cur_name) - 1])
 
-    d = build(a.current, a.baseline, a.catalogue, a.exceptions, a.host, history=a.history, previous=previous)
+    current = str(Path(a.current).resolve()) if Path(a.current).is_symlink() else a.current
+    try:
+        d = build(current, a.baseline, a.catalogue, a.exceptions, a.host, history=a.history, previous=previous)
+    except InputError as err:
+        sys.exit(f"error: {err}")
+    except FileNotFoundError as err:
+        sys.exit(f"error: {err.filename}: not found")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.html").write_text(render_html(d))

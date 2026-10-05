@@ -6,6 +6,9 @@
 # Entries describe what the playbooks do on ANY host. Host-specific facts belong in the audit
 # evidence, not here: this text is printed in every host's report.
 #
+# "rollback" says how to undo a control by hand. Where a family name is given in brackets,
+# `./harden.sh revert <family>` does it for you.
+#
 # Mappings are at family level. CIS = section of the CIS Ubuntu Linux 24.04 LTS Benchmark
 # v1.0.0 (nearest published benchmark; none exists yet for 26.04). ISO = ISO/IEC 27001:2022
 # Annex A. PCI = PCI DSS v4.0.1. Verify exact recommendation numbers against the licensed
@@ -26,10 +29,11 @@ FS-MOD:
     malware-ingress path on physical hosts.
   impact: >-
     None on a server that does not mount these. usb-storage: USB install/rescue media and BMC
-    virtual media stop working until the entry is removed. overlayfs is NOT disabled when
-    Docker is present; squashfs is built into the Ubuntu kernel and is needed by snap.
+    virtual media stop working until the entry is removed. A module that is loaded, backs a
+    mounted filesystem, or is overlayfs on a host with a container runtime is not disabled.
+    squashfs is built into the Ubuntu kernel and is needed by snap.
   validate: "modprobe -n -v cramfs  -> 'install /bin/false';  lsmod | grep -E 'cramfs|udf|usb_storage'  -> empty"
-  rollback: "Remove the line from hardening_disabled_kernel_modules, re-run --tags modules (or delete the file); modprobe <module>."
+  rollback: "[modules] Or: remove the line from hardening_disabled_kernel_modules, re-run --tags modules, then modprobe <module>."
   source: "hardening_extras: kernel_modules.yml; dev-sec os_unused_filesystems"
 
 FS-PART:
@@ -53,7 +57,7 @@ FS-PART:
     speed bump, not a boundary - interpreters (bash file, python file) still run. Partitioning
     cannot be retrofitted online; it belongs in the image/installer (LVM layout).
   validate: "findmnt -no OPTIONS /tmp /dev/shm; cp /bin/true /tmp/t && /tmp/t  -> 'Permission denied'; apt-get install --reinstall tzdata  -> succeeds"
-  rollback: "rm /etc/systemd/system/tmp.mount.d/50-hardening.conf; systemctl daemon-reload; mount -o remount,exec /tmp"
+  rollback: "[mounts] By hand: remove /etc/systemd/system/tmp.mount.d/50-hardening.conf, a tmp.mount unit this tool installed, the staged unit, /etc/apt/apt.conf.d/90hardening-tmp-noexec and the proc, devtmpfs and tmpfs lines dev-sec added to /etc/fstab; systemctl daemon-reload; reboot."
   source: "hardening_extras: mounts.yml, packages.yml; dev-sec os_mnt_dev_shm_*"
 
 PKG:
@@ -63,7 +67,7 @@ PKG:
   pci: ["6.3.3"]
   change: "With hardening_apply_updates: true, pending updates are installed (apt-get upgrade, never removes a package). It is off by default because updates restart services; pending updates then stay visible as an open finding. unattended-upgrades is left as configured."
   why: "Unpatched packages are the dominant real-world compromise path; every other control here assumes the kernel and libc are current."
-  impact: "Service restarts during upgrade (docker restarts containers unless live-restore is set). Kernel/libc updates need a reboot to take effect. Third-party repositories (docker, nodesource) are upgraded too."
+  impact: "Service restarts during upgrade (docker restarts containers unless live-restore is set). Kernel/libc updates need a reboot to take effect. Packages from third-party repositories configured on the host are upgraded too."
   validate: "apt list --upgradable  -> empty; ls /var/run/reboot-required  -> absent after reboot; unattended-upgrade --dry-run -d"
   rollback: "Package downgrade from /var/cache/apt/archives or VM snapshot; dpkg.before in the backup directory lists the previous versions."
   source: "hardening_extras: packages.yml"
@@ -114,7 +118,7 @@ PROC:
     unprivileged_userns_clone=0 breaks rootless Docker/Podman, bubblewrap/flatpak and browser
     sandboxes. kexec_load_disabled=1 breaks kdump and kexec-based fast reboot/live-patch flows.
   validate: "sysctl kernel.kptr_restrict kernel.yama.ptrace_scope fs.suid_dumpable; ulimit -Hc  -> 0; systemctl is-enabled apport kdump-tools  -> masked"
-  rollback: "Override the key in hardening_sysctl_extra / set hardening_disable_kdump: false, re-run --tags os,services."
+  rollback: "[sysctl] [services] Or: override the key in hardening_sysctl_extra, or set hardening_disable_kdump: false, and re-run --tags os,services."
   source: "dev-sec sysctl_config, os_security_kernel_enable_core_dump; hardening_extras: services.yml"
 
 BANNER:
@@ -126,7 +130,7 @@ BANNER:
   why: "Removes free version disclosure and provides the notice that makes prosecution/monitoring defensible in many jurisdictions."
   impact: "Scripts that parse the pre-login text (rare) see different output."
   validate: "ssh -o PreferredAuthentications=none host  -> banner text, no 'Ubuntu'"
-  rollback: "Restore /etc/issue* from the backup."
+  rollback: "[banners] Or: restore /etc/issue and /etc/issue.net from the backup."
   source: "hardening_extras: banners.yml; dev-sec ssh_banner"
 
 SVC:
@@ -135,10 +139,10 @@ SVC:
   iso: [A.8.9, A.8.21]
   pci: ["2.2.4", "1.2.5"]
   change: "Units listed in hardening_disable_units are stopped, disabled and masked (packages stay installed). The list is empty by default, so nothing is switched off until you name it. apport and kdump are handled under process hardening."
-  why: "Every running daemon is attack surface and patch burden; several of these run as root and parse untrusted input (D-Bus, block devices)."
+  why: "Every running daemon is attack surface and patch burden, and many hardware and desktop helpers run as root and parse untrusted input (D-Bus, block devices)."
   impact: "Host-role dependent - multipathd/iscsid are boot-critical on SAN/iSCSI roots, fwupd/smartd are wanted on bare metal. That is why this is an inventory decision, not a baseline default."
   validate: "systemctl list-units --type=service --state=running; ss -tulnp"
-  rollback: "systemctl unmask --now <unit>"
+  rollback: "[services] Or: systemctl unmask --now <unit>"
   source: "hardening_extras: services.yml"
 
 CLIENT:
@@ -174,7 +178,7 @@ CRON:
   why: "Cron is a classic persistence and privilege-escalation vector; non-root users should not read or add system jobs."
   impact: "Application accounts that own crontabs must be added to hardening_cron_allow_users or their jobs stop being editable (existing spool files keep running)."
   validate: "stat -c '%a %U' /etc/crontab /etc/cron.d; su -s /bin/sh nobody -c 'crontab -l'  -> not allowed"
-  rollback: "rm /etc/cron.allow"
+  rollback: "[cron] By hand: rm /etc/cron.allow /etc/at.allow; chmod 644 /etc/crontab; chmod 755 /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly"
   source: "dev-sec os_cron_enabled; hardening_extras: cron.yml"
 
 NET-DEV:
@@ -198,7 +202,7 @@ NET-MOD:
   why: "These protocol stacks have a long CVE history and can be auto-loaded by an unprivileged socket() call."
   impact: "SCTP is used by telecom signalling (SIGTRAN/Diameter) and some clustering software; remove it from the list there."
   validate: "modprobe -n -v sctp  -> 'install /bin/false'"
-  rollback: "Remove from hardening_disabled_kernel_modules / os_unused_filesystems and re-run."
+  rollback: "[modules] Or: remove it from hardening_disabled_kernel_modules and os_unused_filesystems and re-run."
   source: "hardening_extras: kernel_modules.yml; dev-sec modprobe"
 
 NET-SYSCTL:
@@ -208,15 +212,17 @@ NET-SYSCTL:
   pci: ["1.4.3", "2.2.6"]
   change: >-
     /etc/sysctl.d/90-dev-sec.conf: no ICMP redirects sent or accepted, no source routing,
-    strict reverse-path filtering, martian logging, SYN cookies, no IPv6 router advertisements.
-    ip_forward is set to 0, except on hosts where Docker is detected (bridge networking needs it).
+    reverse-path filtering, martian logging, SYN cookies, no IPv6 router advertisements; the
+    redirect, source-route and RA settings are also applied to every existing interface.
+    Forwarding is switched off unless the host already forwards packets or Docker is
+    installed. Reverse-path filtering is strict, or loose on hosts with several default routes.
   why: "Stops the host being used as a router or having its routing table rewritten by an on-link attacker (redirect/RA spoofing), and drops spoofed-source packets."
   impact: >-
     rp_filter=1 drops legitimate traffic on multi-homed hosts with asymmetric routing (use 2
     there). accept_ra=0 removes SLAAC addresses/default routes - hosts that get IPv6 from RAs
     lose IPv6 connectivity. log_martians can be noisy on busy segments.
   validate: "sysctl -a | grep -E 'redirects|rp_filter|accept_source_route|accept_ra '; sysctl --system  (no errors)"
-  rollback: "Set the key in hardening_sysctl_extra and re-run --tags os; or edit /etc/sysctl.d/90-dev-sec.conf and sysctl --system."
+  rollback: "[sysctl] Or: set the key in hardening_sysctl_extra and re-run --tags os,interfaces."
   source: "dev-sec sysctl_config + sysctl_overwrite"
 
 FW:
@@ -232,7 +238,7 @@ FW:
     must be bound to 127.0.0.1 or filtered with hardening_docker_filter. Turning that filter on
     with an incomplete port list cuts off containers that are serving traffic.
   validate: "ufw status verbose; from another host: nmap -Pn -p- <host>  -> only allow-listed ports open"
-  rollback: "ufw disable   (the rollback guard does this automatically if the run loses access)"
+  rollback: "[firewall] Or: ufw disable. Rules are additive: `ufw delete allow <port>` closes a port that was removed from the list."
   source: "hardening_extras: firewall.yml; dev-sec ufw defaults"
 
 SSH:
@@ -256,7 +262,7 @@ SSH:
     Very old clients (no curve25519/sha2) cannot connect. /etc/ssh/sshd_config.d/* is no longer
     included, so cloud-init's drop-in is ignored.
   validate: "sshd -T | grep -Ei 'passwordauth|permitroot|allowusers|maxauthtries'; ssh -o PubkeyAuthentication=no host  -> Permission denied (publickey); ssh-audit host"
-  rollback: "Restore /etc/ssh from access-critical.tar.gz and restart ssh (rollback.sh does exactly this)."
+  rollback: "[ssh] By hand: restore /etc/ssh/sshd_config and ssh_config from the pristine backup, check with sshd -t, restart ssh."
   source: "dev-sec ssh_hardening + playbooks/group_vars/all/baseline.yml"
 
 SUDO:
@@ -275,7 +281,7 @@ SUDO:
     role detects this and omits the line; sudo events are then only in journal/auth.log and
     the audit trail.
   validate: "visudo -c; sudo -l; su - root as a normal user  -> 'Permission denied'"
-  rollback: "rm /etc/sudoers.d/90-hardening; remove the pam_wheel line from /etc/pam.d/su"
+  rollback: "[sudo] By hand: rm /etc/sudoers.d/90-hardening; remove the pam_wheel line from /etc/pam.d/su"
   source: "hardening_extras: sudo.yml"
 
 PAM:
@@ -285,16 +291,17 @@ PAM:
   pci: ["8.3.4", "8.3.6", "8.3.7"]
   change: >-
     pam_pwquality (14+ characters, 3 character classes, no long repeats/sequences, dictionary
-    check, enforced for root), pam_pwhistory (24 remembered), pam_faillock (5 failures -> 15
-    minute lock, root included), nullok removed. All through pam-auth-update profiles.
+    check, enforced for root), pam_pwhistory (24 remembered), pam_faillock (5 failures lock
+    the account for 15 minutes, or 30 with the pci profile; root included), nullok removed.
+    All through pam-auth-update profiles.
   why: "Stops trivially guessable passwords from being set, password recycling, and online guessing against local accounts (console, su, sudo, and SSH if passwords are ever re-enabled)."
   impact: >-
     Existing weak passwords are NOT changed - the policy applies at the next password change.
-    Lockout is a denial-of-service lever: five bad attempts lock an account for 15 minutes,
+    Lockout is a denial-of-service lever: five bad attempts lock an account for the lockout time,
     including root at the console (faillock --user <u> --reset). Service accounts that
     authenticate with passwords can be locked by a misconfigured client.
   validate: "passwd  (try 'Password1' -> rejected); faillock --user <u>; grep -E 'pwquality|pwhistory|faillock' /etc/pam.d/common-*"
-  rollback: "rollback.sh, or: rm /usr/share/pam-configs/{pwhistory,faillock,faillock_authfail}; pam-auth-update --package"
+  rollback: "[pam] By hand: pam-auth-update --package --remove pwhistory faillock faillock_authfail, delete those three profiles and /etc/security/pwquality.conf.d/50-hardening.conf, then pam-auth-update --package. Deleting the files without --remove leaves the profiles switched off when they come back."
   source: "hardening_extras: pam.yml; dev-sec os_auth_retries / os_auth_lockout_time"
 
 ACCT:
@@ -303,8 +310,9 @@ ACCT:
   iso: [A.5.16, A.5.17, A.5.18, A.8.5]
   pci: ["8.2.6", "8.2.8", "8.3.9"]
   change: >-
-    Password max age 365 days, min age 1, warning 7, lock 45 days after expiry (new accounts);
-    max/min age applied to existing human accounts; system accounts (UID 100-999) get nologin
+    Password max age 365 days (90 with the pci profile), min age 1, warning 7, lock 45 days
+    after expiry (new accounts); max/min age applied to existing human accounts; system
+    accounts (UID 1-999) get nologin
     and a locked password; umask 027; idle shells closed after 900s; home directories 0700.
   why: "Bounds the lifetime of a stolen credential, removes dormant accounts, and stops new files being world-readable by default."
   impact: >-
@@ -314,7 +322,7 @@ ACCT:
     world-readable files it creates (some web roots, shared build directories). TMOUT kills
     idle interactive shells, including a forgotten screen-less long job's parent shell.
   validate: "chage -l <user>; useradd -D | grep INACTIVE; umask; echo $TMOUT"
-  rollback: "Restore /etc/login.defs from the backup; chage -M 99999 <user>; rm /etc/profile.d/{tmout.sh,50-hardening-umask.sh}"
+  rollback: "[accounts] restores login.defs and removes the shell settings. Not undone automatically: chage -M 99999 <user> for ageing already set; usermod -s <shell> and passwd -u for system accounts that lost their shell."
   source: "hardening_extras: accounts.yml; dev-sec user_accounts, os_security_auto_logout"
 
 LOG:
@@ -326,7 +334,7 @@ LOG:
   why: "Logs that only exist on the host are erased by whoever compromises the host. Forwarding is the control; the rest is hygiene."
   impact: "Members of 'adm' can still read logs; other local users cannot. Forwarding needs a reachable collector; without TLS the logs cross the network in clear text. With TLS the collector's certificate must chain to the configured CA and match the permitted name, or nothing is sent."
   validate: "journalctl --disk-usage; logger -t test hello && check it on the collector; find /var/log -perm /o+r -type f"
-  rollback: "rm /etc/systemd/journald.conf.d/50-hardening.conf /etc/rsyslog.d/60-hardening-remote.conf; restart the services"
+  rollback: "[logging] By hand: rm /etc/systemd/journald.conf.d/50-hardening.conf /etc/rsyslog.d/60-hardening-remote.conf; restart journald and rsyslog."
   source: "hardening_extras: logging.yml"
 
 AUDIT:
@@ -345,7 +353,7 @@ AUDIT:
     dedicated /var/log/audit filesystem; the playbook checks for one and otherwise uses
     bounded rotation, which leaves two CIS items open by design (accept them in exceptions.yml).
   validate: "auditctl -s  -> enabled 2; auditctl -l | wc -l; sudo -l; ausearch -k user_emulation -ts recent; aureport --summary"
-  rollback: "rm /etc/audit/rules.d/*hardening* /etc/audit/rules.d/99-finalize.rules; reboot (immutable)"
+  rollback: "[auditd] By hand: rm /etc/audit/rules.d/*hardening* /etc/audit/rules.d/99-finalize.rules /etc/default/grub.d/50-hardening-audit.cfg; update-grub; reboot (the rule set is immutable until then)."
   source: "dev-sec os_auditd_*; hardening_extras: auditd.yml"
 
 AIDE:
@@ -361,7 +369,7 @@ AIDE:
     re-baselining, the report becomes noise. The database on the host can be rewritten by root:
     ship reports off-host.
   validate: "aide --check --config /etc/aide/aide.conf  (or: systemctl start dailyaidecheck.service; journalctl -u dailyaidecheck)"
-  rollback: "systemctl disable --now dailyaidecheck.timer; apt purge aide aide-common"
+  rollback: "[aide] stops the timer. To remove it entirely: apt purge aide aide-common (on Ubuntu 22.04 the check is /etc/cron.daily/aide)."
   source: "hardening_extras: aide.yml"
 
 PERM:

@@ -19,9 +19,29 @@ hardening_ssh_password_auth: false
 # Accounts allowed to log in over SSH. MUST contain the automation account.
 hardening_ssh_allow_users: []
 hardening_ssh_port: 22
-# Minutes before the access-critical configuration (PAM, sudoers, sshd, firewall) is restored
-# automatically if the run does not finish and prove it can still log in.
+# Minutes before the access-critical configuration (PAM, sudoers, sshd, accounts, firewall) is
+# restored automatically if a stage does not finish. The timer is re-armed at the start of
+# each guarded stage, so this is the budget for the slowest single stage on the slowest host
+# in the play. Raise it when hardening_apply_updates is on or many hosts run at once.
 hardening_guard_minutes: 20
+# Required only where the preflight finds an IPv6 default route learned from kernel router
+# advertisements: true states that losing it is intended.
+hardening_accept_ipv6_loss: false
+
+# Host firewall. Defined here rather than in the role so that the preflight can check the
+# list before anything is changed. Rules are added, never removed: taking an entry out of
+# this list does not close the port (use `ufw delete`).
+hardening_firewall: true
+hardening_fw_allow:
+  - { port: "22", proto: tcp, from: any, comment: "SSH administration" }
+hardening_fw_logging: low
+
+# How the playbook's own SSH probes reach the host: the same options Ansible uses.
+hardening_probe_opts: >-
+  -o BatchMode=yes -o ControlPath=none {{ ansible_ssh_common_args | default('') }}
+  {{ ('-o IdentitiesOnly=yes -i ' ~ ansible_ssh_private_key_file) if ansible_ssh_private_key_file is defined else '' }}
+  -p {{ ansible_port | default(22) }}
+hardening_probe_target: "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}"
 # Reboot automatically when a change needs it (kernel cmdline, kernel update).
 hardening_allow_reboot: false
 
@@ -32,20 +52,31 @@ hardening_sysctl_base:
   net.ipv4.tcp_timestamps: 1
   kernel.dmesg_restrict: 1
   net.core.bpf_jit_harden: 2
-# Applied only when Docker is detected: bridge networking needs forwarding. The exposure is
-# bounded by the FORWARD chain policy (drop), not by the sysctl.
-hardening_sysctl_docker:
+# Forwarding is switched off unless the host is already forwarding or Docker is installed:
+# containers, virtual machines, VPN gateways and routers all depend on it, and turning it off
+# takes their networking down on the spot. Where it stays on, the audit keeps reporting it,
+# so it remains a visible decision rather than a silent exception.
+hardening_sysctl_forward_v4:
   net.ipv4.ip_forward: 1
+hardening_sysctl_forward_v6:
+  net.ipv6.conf.all.forwarding: 1
+# Strict reverse-path filtering drops legitimate replies on hosts with several default routes
+# or policy routing. Loose mode still rejects sources with no route at all.
+hardening_sysctl_multipath:
+  net.ipv4.conf.all.rp_filter: 2
+  net.ipv4.conf.default.rp_filter: 2
 hardening_sysctl_extra: {}
 
 # ============================ devsec.hardening.os_hardening ====================
 sysctl_overwrite: >-
   {{ hardening_sysctl_base
-     | combine(hardening_sysctl_docker if (hardening_docker_present | default(false)) else {})
+     | combine(hardening_sysctl_forward_v4 if (hardening_docker_present | default(false) or hardening_forwarding_v4 | default(false)) else {})
+     | combine(hardening_sysctl_forward_v6 if (hardening_forwarding_v6 | default(false)) else {})
+     | combine(hardening_sysctl_multipath if (hardening_multipath | default(false)) else {})
      | combine(hardening_sysctl_extra) }}
 
 # dev-sec default is 60 days. CIS asks for <= 365; frequent forced rotation produces weaker
-# passwords (NIST SP 800-63B). Set 90 if PCI DSS 8.3.9 applies and MFA is not in place.
+# passwords (NIST SP 800-63B). hardening_profile: pci sets 90 (PCI DSS 8.3.9).
 os_auth_pw_max_age: "{{ 90 if hardening_profile == 'pci' else 365 }}"
 os_auth_pw_min_age: 1
 os_auth_pw_warn_age: 7
@@ -70,9 +101,15 @@ os_unused_filesystems: [cramfs, freevxfs, jffs2, hfs, hfsplus, udf, dccp, rds, s
 # dev-sec strips login shells and passwords from all accounts with UID 100-999.
 # List service accounts that people really do `su -` into (postgres, oracle ...).
 os_ignore_users: []
-# dev-sec resolves its per-OS variables by os_family, so Ubuntu gets Debian's 0755 root:root
-# for /var/log. Ubuntu's rsyslog runs as 'syslog' and needs the distribution default
-# (0775 root:syslog, re-applied by systemd-tmpfiles at every boot) to create new log files.
+# dev-sec would also delete every user's ~/.netrc and ~/.rhosts and /etc/hosts.equiv. Those
+# are user data (a .netrc often holds the only copy of a service account's credentials),
+# they are not in any backup, and nothing can bring them back. The audit reports them
+# instead (USR-10) and leaves the decision to the owner.
+os_netrc_enabled: false
+os_rhosts_enabled: false
+# Kept explicit. Ubuntu's rsyslog runs as 'syslog' and needs the distribution default for
+# /var/log (0775 root:syslog, re-applied by systemd-tmpfiles at every boot) to create new log
+# files; a 0755 root:root value, as dev-sec's Debian defaults carry, breaks that.
 os_mnt_var_log_dir_mode: "0775"
 os_mnt_var_log_group: syslog
 # Audit log behaviour. CIS wants logs never deleted and the host stopped when the audit
@@ -92,8 +129,8 @@ ssh_server_ports: ["{{ hardening_ssh_port }}"]
 # dev-sec listens on IPv4 only by default, which locks out anyone who reaches the host over
 # IPv6. Listen on both where the host has a global IPv6 address.
 ssh_listen_to: "{{ ['0.0.0.0', '::'] if (hardening_ipv6_in_use | default(false)) else ['0.0.0.0'] }}"
-ssh_server_password_login: "{{ hardening_ssh_password_auth }}"
-sshd_authenticationmethods: "{{ 'any' if hardening_ssh_password_auth else 'publickey' }}"
+ssh_server_password_login: "{{ hardening_ssh_password_auth | bool }}"
+sshd_authenticationmethods: "{{ 'any' if (hardening_ssh_password_auth | bool) else 'publickey' }}"
 ssh_permit_root_login: "no"
 ssh_allow_users: "{{ hardening_ssh_allow_users | join(' ') }}"
 # dev-sec default is 2. With more than two keys in an agent that already fails with

@@ -1,0 +1,41 @@
+---
+# dev-sec sets net.*.conf.all and net.*.conf.default. "default" only reaches interfaces that
+# are created afterwards, and for redirects the kernel uses "all OR the interface's own
+# value". A network card that exists when the settings are applied - at boot, that is every
+# physical one - therefore keeps sending and accepting redirects. A glob entry covers every
+# interface, now and at each boot.
+- name: Work out which per-interface settings to enforce
+  ansible.builtin.set_fact:
+    hardening_interface_keys: >-
+      {{ (['net.ipv4.conf.*.accept_redirects', 'net.ipv4.conf.*.secure_redirects',
+           'net.ipv4.conf.*.send_redirects', 'net.ipv4.conf.*.accept_source_route',
+           'net.ipv6.conf.*.accept_redirects', 'net.ipv6.conf.*.accept_source_route',
+           'net.ipv6.conf.*.accept_ra'])
+         | reject('in', (hardening_sysctl_extra | default({})).keys() | map('replace', '.all.', '.*.') | list)
+         | list }}
+
+- name: Persist the per-interface network settings
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/91-hardening-interfaces.conf
+    content: |
+      # Managed by Ansible (hardening_extras). Applies to every interface, including those
+      # that already exist when sysctl settings are loaded at boot.
+      {% for k in hardening_interface_keys %}
+      {{ k }} = 0
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply them to the interfaces that exist now
+  ansible.builtin.shell: |
+    changed=0
+    {% for k in hardening_interface_keys %}
+    for f in /proc/sys/{{ k | replace('.', '/') | replace('*', '*') }}; do
+      [ -w "$f" ] || continue
+      [ "$(cat "$f")" = 0 ] || { echo 0 > "$f" && changed=1; }
+    done
+    {% endfor %}
+    [ $changed -eq 0 ] || echo changed
+  register: hardening_interfaces_applied
+  changed_when: "'changed' in hardening_interfaces_applied.stdout"
