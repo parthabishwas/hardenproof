@@ -1,0 +1,17 @@
+---
+name: Feature request
+description: A control, check, report feature or platform you would like supported
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need and why
+      description: The situation it would help with. For a control or check, name the benchmark section.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Operational impact
+      description: What could this break on a running server, and how would it be reverted?

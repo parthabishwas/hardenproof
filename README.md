@@ -1,5 +1,9 @@
 # HardenProof
 
+[![ci](https://github.com/parthabishwas/hardenproof/actions/workflows/ci.yml/badge.svg)](https://github.com/parthabishwas/hardenproof/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/parthabishwas/hardenproof)](https://github.com/parthabishwas/hardenproof/releases)
+[![license](https://img.shields.io/github/license/parthabishwas/hardenproof)](LICENSE)
+
 Harden an Ubuntu server against the CIS benchmark, and prove what changed: audit before,
 guarded apply, audit after, one HTML report.
 

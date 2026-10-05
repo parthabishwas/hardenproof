@@ -1,0 +1,52 @@
+---
+name: Bug report
+description: A run failed, changed something it should not have, or a check reported the wrong result
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security defects here (a lockout, a control reported as PASS that is not in
+        effect, leaked credentials). Use the Security tab; see SECURITY.md.
+        Remove host names, addresses and anything else you do not want to publish.
+  - type: input
+    id: version
+    attributes:
+      label: HardenProof version
+      description: Output of `./harden.sh --version`, or the commit
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target system
+      description: Ubuntu release, architecture, and where it runs (VM, cloud provider, bare metal)
+      placeholder: Ubuntu 24.04, amd64, cloud VPS
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: ./harden.sh all -i inventory/prod/hosts.yml -l web01
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >-
+        The failing task from the run log under `reports/_logs/`, or for a wrong audit result
+        the row of `cis_audit.tsv` (check ID, status, evidence) and the audit script version.
+      render: text
+  - type: textarea
+    id: overrides
+    attributes:
+      label: Settings changed from the defaults
+      render: yaml

@@ -49,3 +49,5 @@ by reading the diff.
 ## Reporting security problems
 
 See [`SECURITY.md`](SECURITY.md). Do not open a public issue for them.
+
+Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
