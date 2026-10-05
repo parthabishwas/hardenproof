@@ -7,6 +7,7 @@ its own version, recorded in every result file.
 
 - Documentation: `hardening_audit_lynis` is listed with the other settings and in the example
   overrides file.
+- README screenshots show the current report, including the CIS column.
 
 ## 1.0.2 - 2026-10-05
 

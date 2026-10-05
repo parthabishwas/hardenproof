@@ -416,6 +416,9 @@ light and dark.
 - **Scores** per CIS level, with the Lynis hardening index (or "not run" when Lynis was skipped).
 - **Open findings, accepted risks and manual-review items**, each with its CIS section and
   level, linked to its control family.
+
+  ![Open findings with their CIS section and level, and an accepted risk with its owner and expiry](docs/img/report-findings.png)
+
 - **Control families.** Every check with its evidence, next to what the control changes, why,
   its impact, and how to verify and undo it. Filter by text or status.
 - **History.** The Level 1 score at every audit of the host, and what regressed or was fixed
